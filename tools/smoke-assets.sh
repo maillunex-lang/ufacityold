@@ -66,6 +66,7 @@ LUNEXGAME_SMOKE_BATTLE=1 run; [ "$RC" = 0 ] || { echo "ПРОВАЛ: код $RC"
 expect "BATTLE_LOADED units=10 " "бой получен с сервера (10 юнитов)"
 expect "BATTLE_OK winner=player .*inconsistencies=0" "запись проиграна, результат согласован с состоянием"
 expect "BATTLE_MOVEMENT_OK moves=[1-9][0-9]* inconsistencies=0" "серверные перемещения, дальность атак и конечные координаты согласованы с клиентом"
+expect "BATTLE_SKILLS_OK auto1=[1-9][0-9]* auto2=[1-9][0-9]* passives=10 inconsistencies=0" "оба автонавыка и пассивы проиграны без расхождений"
 ! grep -q "SCRIPT ERROR" "$W/out.log" || { echo "ПРОВАЛ: ошибки скриптов"; grep -B1 -A2 "SCRIPT ERROR" "$W/out.log" | head; exit 1; }
 echo "ок: ошибок скриптов нет"
 echo "== 7. сервер недоступен"

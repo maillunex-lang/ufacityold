@@ -90,7 +90,7 @@ func stationaryTarget(id string, slot int) UnitDef {
 func TestMovementReplayAndInputUnchanged(t *testing.T) {
 	defs := PrototypeSquads()
 	before := append([]UnitDef(nil), defs...)
-	o := Run(defs, DefaultEnergy)
+	o := runBattle(t, defs, DefaultEnergy)
 	if !reflect.DeepEqual(before, defs) {
 		t.Fatal("расчёт изменил исходные параметры")
 	}
@@ -100,7 +100,7 @@ func TestMovementReplayAndInputUnchanged(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 20 {
-		got, err := json.Marshal(Run(defs, DefaultEnergy))
+		got, err := json.Marshal(runBattle(t, defs, DefaultEnergy))
 		if err != nil || string(want) != string(got) {
 			t.Fatal("позиции/события недетерминированы", err)
 		}
@@ -113,7 +113,7 @@ func TestMeleeApproachesOnceAndRetargetsAfterDeath(t *testing.T) {
 		stationaryTarget("a", 0), stationaryTarget("b", 2),
 	}
 	defs[1].MaxHP = 400
-	o := Run(defs, Energy{Max: 1000000})
+	o := runBattle(t, defs, Energy{Max: 1000000})
 	checkMovementReplay(t, o)
 	firstAttack, death, movesBefore, movesAfter := 0, 0, 0, 0
 	for _, e := range o.Events {
@@ -163,7 +163,7 @@ func TestSeveralAttackersUseDistinctApproaches(t *testing.T) {
 				defs = append(defs, UnitDef{ID: fmt.Sprint("p", slot), Side: "player", Slot: slot, Role: Fighter,
 					MaxHP: 1000000, Attack: 1, IntervalMs: 1000, Melee: true})
 			}
-			o := Run(defs, Energy{Max: 1000000})
+			o := runBattle(t, defs, Energy{Max: 1000000})
 			checkMovementReplay(t, o)
 			attacked := map[string]bool{}
 			for _, e := range o.Events {
@@ -195,7 +195,7 @@ func TestTravelTimeUsesSpeedAndRange(t *testing.T) {
 				stationaryTarget("e", 0),
 			}
 			defs[1].Position = Position{10000, 100}
-			o := Run(defs, DefaultEnergy)
+			o := runBattle(t, defs, DefaultEnergy)
 			checkMovementReplay(t, o)
 			distanceToTravel := 20000 - int(float64(tc.reach)*0.9)
 			want := int(math.Ceil(float64(distanceToTravel)/float64(tc.speed*TickMs/1000))) * TickMs
@@ -218,7 +218,7 @@ func TestDeathDuringApproachStopsMovement(t *testing.T) {
 			Melee: true, RunSpeed: 500},
 		{ID: "e", Side: "enemy", Role: Archer, MaxHP: 100000, Attack: 1, IntervalMs: 100},
 	}
-	o := Run(defs, DefaultEnergy)
+	o := runBattle(t, defs, DefaultEnergy)
 	checkMovementReplay(t, o)
 	if o.Result.Winner != "enemy" || o.Result.DurationMs != TickMs {
 		t.Fatal("боец не погиб во время подхода")
@@ -237,7 +237,7 @@ func TestSlowMovementDoesNotStallOnRounding(t *testing.T) {
 		stationaryTarget("e", 0),
 	}
 	defs[1].Position = Position{2000, 100}
-	o := Run(defs, DefaultEnergy)
+	o := runBattle(t, defs, DefaultEnergy)
 	checkMovementReplay(t, o)
 	travelled := o.Positions["p"].X - defs[0].Position.X
 	if travelled < 89 || travelled > 90 {
@@ -250,7 +250,7 @@ func TestMovingTargetsAndDeaths(t *testing.T) {
 		{ID: "p", Side: "player", Role: Fighter, MaxHP: 100000, Attack: 100, IntervalMs: 500, Melee: true},
 		{ID: "e", Side: "enemy", Role: Fighter, MaxHP: 1000, Attack: 100, IntervalMs: 500, Melee: true},
 	}
-	o := Run(defs, DefaultEnergy)
+	o := runBattle(t, defs, DefaultEnergy)
 	checkMovementReplay(t, o)
 	if o.Result.Reason != "elimination" {
 		t.Fatal("взаимное сближение не завершилось боем", o.Result)
@@ -262,13 +262,13 @@ func TestRangedStaysAndRespectsRange(t *testing.T) {
 		{ID: "p", Side: "player", Role: Archer, MaxHP: 1000, Attack: 100, IntervalMs: 100, AttackRange: 500},
 		stationaryTarget("e", 0),
 	}
-	o := Run(defs, DefaultEnergy)
+	o := runBattle(t, defs, DefaultEnergy)
 	checkMovementReplay(t, o)
 	if len(o.Events) != 0 || o.Result.Reason != "timeout" {
 		t.Fatal("дальний подбежал или атаковал вне дальности")
 	}
 	defs[0].AttackRange = 4000
-	o = Run(defs, DefaultEnergy)
+	o = runBattle(t, defs, DefaultEnergy)
 	checkMovementReplay(t, o)
 	if len(o.Events) == 0 {
 		t.Fatal("дальний не атакует в пределах дальности")
@@ -285,7 +285,7 @@ func TestMeleeSkillWaitsForRangeWithoutSpendingEnergy(t *testing.T) {
 		{ID: "p", Side: "player", Role: Fighter, MaxHP: 100000, Attack: 100, IntervalMs: 100, Melee: true, RunSpeed: 500},
 		{ID: "e", Side: "enemy", Role: Archer, MaxHP: 1000000, Attack: 1, IntervalMs: 100},
 	}
-	o := Run(defs, Energy{Max: 100, PerTaken: 100})
+	o := runBattle(t, defs, Energy{Max: 100, PerTaken: 100})
 	checkMovementReplay(t, o)
 	for _, e := range o.Events {
 		if e.Src == "p" && (e.Type == "attack" || e.Type == "skill") {

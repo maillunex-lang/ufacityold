@@ -1,6 +1,6 @@
 package battle
 
-// PrototypeSquads возвращает отряды ВРЕМЕННОГО прототипа (этап 1): игрок и враг по пять героев.
+// PrototypeSquads возвращает отряды ВРЕМЕННОГО прототипа: игрок и враг по пять героев уровня 40.
 // Герои и числа — заглушки для проверки механики, не финальный контент и не финальный баланс.
 func PrototypeSquads() []UnitDef {
 	p := []UnitDef{
@@ -20,9 +20,48 @@ func PrototypeSquads() []UnitDef {
 	const hpScale = 3 // временная настройка длительности: бой ~30–60 с, чтобы были видны способности
 	for i := range p {
 		p[i].Side, p[i].Temporary, p[i].MaxHP = "player", true, p[i].MaxHP*hpScale
+		p[i].Level = 40
+		p[i].AutoSkills, p[i].Passive = prototypeSkills(p[i].Role)
 	}
 	for i := range e {
 		e[i].Side, e[i].Temporary, e[i].MaxHP = "enemy", true, e[i].MaxHP*hpScale
+		e[i].Level = 40
+		e[i].AutoSkills, e[i].Passive = prototypeSkills(e[i].Role)
 	}
 	return append(p, e...)
+}
+
+// Наборы для проверки механики, не утверждённые игровые способности и баланс.
+func prototypeSkills(role Role) ([2]AutoSkill, *Passive) {
+	makeSkill := func(name string, level, cooldown int, kind string, target TargetRule, power int) AutoSkill {
+		return AutoSkill{Name: name, UnlockLevel: level, CooldownMs: cooldown, Kind: kind, Target: target, PowerPermille: power}
+	}
+	var skills [2]AutoSkill
+	switch role {
+	case Tank:
+		skills = [2]AutoSkill{makeSkill("Удар щитом", 10, 5000, "damage", CurrentEnemy, 1200), makeSkill("Передышка", 20, 9000, "heal", Self, 3000)}
+	case Fighter:
+		skills = [2]AutoSkill{makeSkill("Сильный удар", 10, 5000, "damage", CurrentEnemy, 1600), makeSkill("Рассечение", 20, 9000, "damage", CurrentEnemy, 2200)}
+	case Archer:
+		skills = [2]AutoSkill{makeSkill("Прицельный выстрел", 10, 5000, "damage", LowestEnemy, 1600), makeSkill("Залп", 20, 9000, "damage", AllEnemies, 700)}
+	case Mage:
+		skills = [2]AutoSkill{makeSkill("Вспышка", 10, 6000, "damage", AllEnemies, 800), makeSkill("Сгусток", 20, 10000, "damage", LowestEnemy, 2200)}
+	case Healer:
+		skills = [2]AutoSkill{makeSkill("Исцеление", 10, 5000, "heal", LowestAlly, 2200), makeSkill("Общее лечение", 20, 9000, "heal", AllAllies, 1000)}
+	}
+	for slot := range skills {
+		suffix, upgradeLevel := "-auto1", 30
+		if slot == 1 {
+			suffix, upgradeLevel = "-auto2", 50
+		}
+		skills[slot].ID = string(role) + suffix
+		skills[slot].Upgrades = []SkillUpgrade{{Level: upgradeLevel, PowerPermille: skills[slot].PowerPermille * 12 / 10}}
+	}
+	p := &Passive{ID: string(role) + "-passive", Name: "Временная стойкость", UnlockLevel: 40, HPPermille: 100,
+		Upgrades: []PassiveBonus{{Level: 70, HPPermille: 200}}}
+	if role != Tank {
+		p.Name, p.HPPermille, p.AttackPermille = "Временная сила", 0, 100
+		p.Upgrades = []PassiveBonus{{Level: 70, AttackPermille: 200}}
+	}
+	return skills, p
 }

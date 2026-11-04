@@ -21,7 +21,7 @@ type Movement struct {
 // prepare не меняет входные данные. Нулевые параметры сохраняют совместимость
 // с прототипом и небольшими отрядами в тестах; позиции задаются серверной расстановкой.
 func prepare(defs []UnitDef) []UnitDef {
-	out := append([]UnitDef(nil), defs...)
+	out := cloneDefs(defs)
 	for i := range out {
 		d := &out[i]
 		if d.Position == (Position{}) {
@@ -41,13 +41,16 @@ func prepare(defs []UnitDef) []UnitDef {
 			}
 			d.Position = Position{x, z}
 		}
-		if d.AttackRange <= 0 {
+		if d.Level == 0 {
+			d.Level = 1
+		}
+		if d.AttackRange == 0 {
 			d.AttackRange = 12000
 			if d.Melee {
 				d.AttackRange = 1100
 			}
 		}
-		if d.RunSpeed <= 0 {
+		if d.RunSpeed == 0 {
 			d.RunSpeed = 3000
 		}
 	}
@@ -60,7 +63,7 @@ func distance(a, b Position) float64 {
 
 func inRange(u, target *unit) bool { return distance(u.pos, target.pos) <= float64(u.AttackRange) }
 
-func (s *sim) inReach(u *unit, candidates []*unit) []*unit {
+func (s *Battle) inReach(u *unit, candidates []*unit) []*unit {
 	var out []*unit
 	for _, target := range candidates {
 		if inRange(u, target) {
@@ -70,7 +73,7 @@ func (s *sim) inReach(u *unit, candidates []*unit) []*unit {
 	return out
 }
 
-func (s *sim) primaryTarget(u *unit, candidates []*unit) *unit {
+func (s *Battle) primaryTarget(u *unit, candidates []*unit) *unit {
 	if u.Melee {
 		return u.target
 	}
@@ -81,7 +84,7 @@ func (s *sim) primaryTarget(u *unit, candidates []*unit) *unit {
 // получают разные направления. Место удерживается до гибели цели/атакующего.
 var approachOffsets = [...]Position{{-1000, 0}, {-309, -951}, {-309, 951}, {809, -588}, {809, 588}}
 
-func (s *sim) moveUnits() {
+func (s *Battle) moveUnits() {
 	// Сначала выбираем цели всем: результат движения не зависит от порядка обновления координат.
 	for _, u := range s.units {
 		if u.hp <= 0 || !u.Melee {

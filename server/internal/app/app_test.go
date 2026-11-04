@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"lunexgame/internal/battle"
 	"lunexgame/internal/store"
 )
 
@@ -176,6 +177,22 @@ func TestBattleAPI(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &first); err != nil || !bytes.Equal(next.Battle, first.Battle) {
 		t.Fatal("одинаковые отряды дали разные записи", err)
 	}
+	var recorded battle.Outcome
+	if err := json.Unmarshal(first.Battle, &recorded); err != nil {
+		t.Fatal(err)
+	}
+	counts := map[string]int{}
+	for _, event := range recorded.Events {
+		counts[event.Type]++
+	}
+	if counts["passive"] != 10 || counts["auto_skill"] == 0 {
+		t.Fatal("API не вернул новые навыки", counts)
+	}
+	for _, unit := range recorded.Units {
+		if unit.Level != 40 || !unit.PassiveActive {
+			t.Fatal("неполные серверные параметры демонстрационного отряда")
+		}
+	}
 	if err := st.DB.QueryRow("SELECT count(*) FROM battles").Scan(&count); err != nil || count != 2 {
 		t.Fatal("число попыток", count, err)
 	}
@@ -195,6 +212,20 @@ func TestBattleAPI(t *testing.T) {
 	}
 	if g := call("GET", "/LunexGame/api/battle/"+resp.BattleID, tok1); !bytes.Equal(g.Body.Bytes(), w.Body.Bytes()) {
 		t.Fatal("попытка подделки изменила сохранённый бой")
+	}
+	// Клиент не может назначить уровень, параметры навыков или победу.
+	for range 2 {
+		r := httptest.NewRequest("POST", "/LunexGame/api/battle/start",
+			strings.NewReader(`{"level":10000,"winner":"player","units":[{"id":"p0","attack":1000000,"passiveActive":true}]}`))
+		r.Header.Set("Authorization", "Bearer "+tok1)
+		g := httptest.NewRecorder()
+		h.ServeHTTP(g, r)
+		var forged struct {
+			Battle json.RawMessage `json:"battle"`
+		}
+		if err := json.Unmarshal(g.Body.Bytes(), &forged); err != nil || g.Code != 200 || !bytes.Equal(forged.Battle, first.Battle) {
+			t.Fatal("клиент изменил серверный расчёт", err, g.Code)
+		}
 	}
 }
 
