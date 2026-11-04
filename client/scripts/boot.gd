@@ -63,7 +63,9 @@ func _run() -> void:
 	if v.is_empty():
 		_fail("Сервер недоступен")
 		return
-	info_label.text = "Сервер %s (%s)" % [str(v.get("version", "?")), str(v.get("commit", "?")).substr(0, 7)]
+	var ver := str(v.get("version", "?"))
+	var short_commit := str(v.get("commit", "?")).substr(0, 7)
+	info_label.text = "Сервер %s" % ver if ver == short_commit else "Сервер %s (%s)" % [ver, short_commit]
 
 	var token := _load_token()
 	var me: Dictionary = {}
