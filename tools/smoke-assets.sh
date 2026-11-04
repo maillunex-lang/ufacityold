@@ -16,7 +16,7 @@ export XDG_DATA_HOME="$W/xdg" LUNEXGAME_BASE_URL="http://127.0.0.1:$PORT/LunexGa
 
 run() { # печатает вывод клиента, возвращает его код
   set +e; timeout 90 "$GODOT" --headless --path "$ROOT/client" >"$W/out.log" 2>&1; RC=$?; set -e
-  grep -E "BOOT_|ASSETS_|TEST_ABORT|SCRIPT ERROR" "$W/out.log" || true
+  grep -E "BOOT_|ASSETS_|BATTLE_|TEST_ABORT|SCRIPT ERROR" "$W/out.log" || true
 }
 expect() { # expect "<шаблон в выводе>" "описание"
   grep -qE "$1" "$W/out.log" || { echo "ПРОВАЛ: $2 (нет /$1/)"; cat "$W/out.log" | tail -20; exit 1; }
@@ -61,6 +61,12 @@ LUNEXGAME_TEST_ABORT_AFTER_BYTES=3145728 run >/dev/null
 P=$(find "$(adir)" -name '*.part'); head -c 1000 /dev/urandom | dd of="$P" bs=1 seek=500 conv=notrunc 2>/dev/null
 run; expect "ASSETS_OK" "загрузка завершена"
 verify
+echo "== 6b. бой: вход, ресурсы, расчёт на сервере, проигрывание записи, сверка"
+LUNEXGAME_SMOKE_BATTLE=1 run; [ "$RC" = 0 ] || { echo "ПРОВАЛ: код $RC"; tail -20 "$W/out.log"; exit 1; }
+expect "BATTLE_LOADED units=10 " "бой получен с сервера (10 юнитов)"
+expect "BATTLE_OK winner=player .*inconsistencies=0" "запись проиграна, результат согласован с состоянием"
+! grep -q "SCRIPT ERROR" "$W/out.log" || { echo "ПРОВАЛ: ошибки скриптов"; grep -B1 -A2 "SCRIPT ERROR" "$W/out.log" | head; exit 1; }
+echo "ок: ошибок скриптов нет"
 echo "== 7. сервер недоступен"
 kill $SRV; wait $SRV 2>/dev/null || true
 run; [ "$RC" = 1 ] || { echo "ПРОВАЛ: ожидался код 1, получен $RC"; exit 1; }

@@ -11,6 +11,7 @@ var info_label: Label
 var retry_button: Button
 var progress_bar: ProgressBar
 var loader: AssetLoader
+var battle_button: Button
 
 
 func _ready() -> void:
@@ -44,6 +45,14 @@ func _build_ui() -> void:
 	progress_bar.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	progress_bar.hide()
 	box.add_child(progress_bar)
+	battle_button = Button.new()
+	battle_button.text = "В бой"
+	battle_button.custom_minimum_size = Vector2(500, 140)
+	battle_button.add_theme_font_size_override("font_size", 56)
+	battle_button.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	battle_button.pressed.connect(func() -> void: get_tree().change_scene_to_file("res://scenes/battle.tscn"))
+	battle_button.hide()
+	box.add_child(battle_button)
 	retry_button = Button.new()
 	retry_button.text = "Повторить"
 	retry_button.custom_minimum_size = Vector2(400, 120)
@@ -66,6 +75,7 @@ func _label(text: String, size: int, color: Color) -> Label:
 
 func _run() -> void:
 	retry_button.hide()
+	battle_button.hide()
 	status_label.text = "Подключение к серверу…"
 	var v: Dictionary = await _request("/api/version", HTTPClient.METHOD_GET, "")
 	if v.is_empty():
@@ -94,10 +104,18 @@ func _run() -> void:
 	status_label.text = "Вы вошли как гость #%d" % account_id
 	print("BOOT_OK account=", account_id)
 
+	Session.base_url = base_url
+	Session.token = token
+	Session.account_id = account_id
 	if not await _sync_assets():
 		return
 	if smoke:
-		get_tree().quit(0)
+		if OS.get_environment("LUNEXGAME_SMOKE_BATTLE") == "1":
+			get_tree().change_scene_to_file("res://scenes/battle.tscn")
+		else:
+			get_tree().quit(0)
+		return
+	battle_button.show()
 
 
 ## Стартовый набор блокирует вход, остальное докачивается в фоне (пока без игрового экрана).

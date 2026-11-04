@@ -13,7 +13,7 @@ func TestMigrateAndBackup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v, _ := s.SchemaVersion(); v != 1 {
+	if v, _ := s.SchemaVersion(); v != 2 {
 		t.Fatalf("версия %d", v)
 	}
 	if ents, _ := os.ReadDir(bk); len(ents) != 0 {
@@ -63,6 +63,7 @@ func TestBackupOfExistingDB(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	s0.DB.Exec(`DROP TABLE battles`)
 	s0.DB.Exec(`DROP TABLE sessions`)
 	s0.DB.Exec(`DROP TABLE accounts`)
 	s0.DB.Exec(`DELETE FROM schema_migrations`)

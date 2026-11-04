@@ -8,11 +8,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"lunexgame/internal/assets"
+	"lunexgame/internal/battle"
 	"lunexgame/internal/store"
 )
 
@@ -78,6 +80,53 @@ func New(b Build, cfg Config) http.Handler {
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"accountId": id})
+		})
+	}
+	if cfg.Store != nil {
+		auth := func(w http.ResponseWriter, r *http.Request) (int64, bool) {
+			id, err := cfg.Store.AccountByToken(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+			if err != nil {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+				return 0, false
+			}
+			return id, true
+		}
+		battleLim := newLimiter(20, time.Minute)
+		// Прототип: бой рассчитывается целиком на сервере (полный автомат), клиент проигрывает запись.
+		mux.HandleFunc("POST "+Prefix+"/api/battle/start", func(w http.ResponseWriter, r *http.Request) {
+			acc, ok := auth(w, r)
+			if !ok {
+				return
+			}
+			if !battleLim.allow(strconv.FormatInt(acc, 10)) {
+				writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "too_many_requests"})
+				return
+			}
+			out := battle.Run(battle.PrototypeSquads(), battle.DefaultEnergy)
+			js, err := json.Marshal(out)
+			if err == nil {
+				var id string
+				if id, err = cfg.Store.SaveBattle(acc, out.Balance, out.Result.Winner, js); err == nil {
+					writeJSON(w, http.StatusOK, map[string]any{"battleId": id, "battle": json.RawMessage(js)})
+					return
+				}
+			}
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal"})
+		})
+		mux.HandleFunc("GET "+Prefix+"/api/battle/{id}", func(w http.ResponseWriter, r *http.Request) {
+			acc, ok := auth(w, r)
+			if !ok {
+				return
+			}
+			js, err := cfg.Store.GetBattle(acc, r.PathValue("id"))
+			if err == store.ErrNotFound {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "not_found"})
+				return
+			} else if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal"})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"battleId": r.PathValue("id"), "battle": json.RawMessage(js)})
 		})
 	}
 	// Раздача ресурсов (основа для загрузчика клиента). Каталог пуст, пока нет контента.

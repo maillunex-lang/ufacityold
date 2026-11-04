@@ -101,3 +101,51 @@ func TestGuestFlow(t *testing.T) {
 		t.Fatal("лимит не сработал")
 	}
 }
+
+func TestBattleAPI(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "t.db"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	h := New(Build{}, Config{Store: st})
+	_, tok1, _ := st.CreateGuest()
+	_, tok2, _ := st.CreateGuest()
+	call := func(method, path, tok string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, path, nil)
+		if tok != "" {
+			r.Header.Set("Authorization", "Bearer "+tok)
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+	if call("POST", "/LunexGame/api/battle/start", "").Code != 401 {
+		t.Fatal("бой без входа должен быть закрыт")
+	}
+	w := call("POST", "/LunexGame/api/battle/start", tok1)
+	if w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	var resp struct {
+		BattleID string `json:"battleId"`
+		Battle   struct {
+			Result struct{ Winner string } `json:"result"`
+			Events []json.RawMessage       `json:"events"`
+			Units  []json.RawMessage       `json:"units"`
+		} `json:"battle"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.BattleID == "" || len(resp.Battle.Events) == 0 || len(resp.Battle.Units) != 10 || resp.Battle.Result.Winner == "" {
+		t.Fatalf("неполный ответ: %s", w.Body.String()[:200])
+	}
+	if g := call("GET", "/LunexGame/api/battle/"+resp.BattleID, tok1); g.Code != 200 {
+		t.Fatal("владелец не получил бой", g.Code)
+	}
+	if call("GET", "/LunexGame/api/battle/"+resp.BattleID, tok2).Code != 404 {
+		t.Fatal("чужой бой должен быть недоступен")
+	}
+	if call("GET", "/LunexGame/api/battle/nope", tok1).Code != 404 {
+		t.Fatal("несуществующий бой")
+	}
+}
