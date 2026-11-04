@@ -11,7 +11,8 @@ if ss -Hltun | awk '{print $5}' | grep -qE "[:.]$PORT\$"; then echo "порт $P
 
 id lunexgame &>/dev/null || useradd --system --home /opt/lunexgame --shell /usr/sbin/nologin lunexgame
 id lunexgame-deploy &>/dev/null || useradd --system --home /opt/lunexgame --shell /bin/bash lunexgame-deploy
-install -d -o lunexgame-deploy -g lunexgame -m 0750 /opt/lunexgame /opt/lunexgame/releases
+install -d -o lunexgame-deploy -g lunexgame -m 0750 /opt/lunexgame
+install -d -o lunexgame-deploy -g lunexgame -m 2750 /opt/lunexgame/releases   # setgid: новые релизы наследуют группу lunexgame
 install -d -o root -g root -m 0755 /opt/lunexgame/bin /opt/lunexgame/etc
 install -d -o lunexgame -g lunexgame -m 0750 /opt/lunexgame/data /opt/lunexgame/assets /opt/lunexgame/backups
 install -m 0755 -o root -g root "$HERE/lunexgame-deploy" /opt/lunexgame/bin/lunexgame-deploy
