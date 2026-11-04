@@ -65,6 +65,7 @@ echo "== 6b. бой: вход, ресурсы, расчёт на сервере,
 LUNEXGAME_SMOKE_BATTLE=1 run; [ "$RC" = 0 ] || { echo "ПРОВАЛ: код $RC"; tail -20 "$W/out.log"; exit 1; }
 expect "BATTLE_LOADED units=10 " "бой получен с сервера (10 юнитов)"
 expect "BATTLE_OK winner=player .*inconsistencies=0" "запись проиграна, результат согласован с состоянием"
+expect "BATTLE_MOVEMENT_OK moves=[1-9][0-9]* inconsistencies=0" "серверные перемещения, дальность атак и конечные координаты согласованы с клиентом"
 ! grep -q "SCRIPT ERROR" "$W/out.log" || { echo "ПРОВАЛ: ошибки скриптов"; grep -B1 -A2 "SCRIPT ERROR" "$W/out.log" | head; exit 1; }
 echo "ок: ошибок скриптов нет"
 echo "== 7. сервер недоступен"

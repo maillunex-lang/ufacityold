@@ -1,4 +1,4 @@
-// Package battle — серверный расчёт боя (прототип, этап 1).
+// Package battle — серверный расчёт боя с позициями и движением.
 //
 // Бой считается целиком на сервере в игровом времени с шагом TickMs и без случайности:
 // одинаковые входные данные дают одинаковый результат. Клиент только проигрывает записанные события.
@@ -10,7 +10,7 @@ import "sort"
 const (
 	TickMs         = 100
 	TimeLimitMs    = 90_000
-	BalanceVersion = "proto-1"
+	BalanceVersion = "proto-2-movement"
 )
 
 // Energy — настраиваемые коэффициенты начисления энергии (по ТЗ — настраиваются).
@@ -35,17 +35,20 @@ const (
 
 // UnitDef — описание героя на старте боя. Slot: 0,1 — передний ряд, 2,3,4 — задний.
 type UnitDef struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	Role       Role   `json:"role"`
-	Rarity     string `json:"rarity"`
-	Side       string `json:"side"` // "player" | "enemy"
-	Slot       int    `json:"slot"`
-	MaxHP      int    `json:"maxHp"`
-	Attack     int    `json:"attack"`
-	IntervalMs int    `json:"intervalMs"`
-	Melee      bool   `json:"melee"`
-	Temporary  bool   `json:"temporary"` // временная модель/герой, не финальный контент
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Role        Role     `json:"role"`
+	Rarity      string   `json:"rarity"`
+	Side        string   `json:"side"` // "player" | "enemy"
+	Slot        int      `json:"slot"`
+	MaxHP       int      `json:"maxHp"`
+	Attack      int      `json:"attack"`
+	IntervalMs  int      `json:"intervalMs"`
+	Melee       bool     `json:"melee"`
+	Temporary   bool     `json:"temporary"` // временная модель/герой, не финальный контент
+	Position    Position `json:"position"`  // стартовая позиция, в тысячных долях единицы Godot
+	AttackRange int      `json:"attackRange"`
+	RunSpeed    int      `json:"runSpeed"` // тысячных долей единицы в секунду; дальние не перемещаются
 }
 
 type Hit struct {
@@ -56,11 +59,12 @@ type Hit struct {
 
 type Event struct {
 	T       int            `json:"t"`
-	Type    string         `json:"type"` // attack | skill | death
+	Type    string         `json:"type"` // move | attack | skill | death
 	Src     string         `json:"src"`
 	Kind    string         `json:"kind,omitempty"` // для skill: damage | heal
 	Targets []Hit          `json:"targets,omitempty"`
 	Energy  map[string]int `json:"energy,omitempty"` // энергия юнитов, изменившаяся этим событием
+	Move    *Movement      `json:"move,omitempty"`
 }
 
 type Result struct {
@@ -70,19 +74,25 @@ type Result struct {
 }
 
 type Outcome struct {
-	Units   []UnitDef `json:"units"`
-	Events  []Event   `json:"events"`
-	Result  Result    `json:"result"`
-	Balance string    `json:"balanceVersion"`
+	Units     []UnitDef           `json:"units"`
+	Events    []Event             `json:"events"`
+	Result    Result              `json:"result"`
+	Balance   string              `json:"balanceVersion"`
+	Positions map[string]Position `json:"positions"` // позиции в момент завершения боя, до победной стойки
 }
 
 type unit struct {
 	UnitDef
-	hp     int
-	energy float64
-	nextAt int
-	dead   bool
-	alive0 bool // жив в начале текущего тика
+	hp          int
+	energy      float64
+	nextAt      int
+	dead        bool
+	alive0      bool // жив в начале текущего тика
+	pos         Position
+	target      *unit
+	approach    int
+	approaching bool
+	moveCredit  float64 // неиспользованная длина шага: медленный герой не застревает на округлении координат
 }
 
 type sim struct {
@@ -95,12 +105,14 @@ type sim struct {
 
 // Run рассчитывает бой.
 func Run(defs []UnitDef, cfg Energy) Outcome {
+	defs = prepare(defs)
 	s := &sim{cfg: cfg, touched: map[string]bool{}}
 	for _, d := range defs {
-		s.units = append(s.units, &unit{UnitDef: d, hp: d.MaxHP, nextAt: d.IntervalMs})
+		s.units = append(s.units, &unit{UnitDef: d, hp: d.MaxHP, nextAt: d.IntervalMs, pos: d.Position, approach: -1})
 	}
 	var res Result
 	for s.t = TickMs; s.t <= TimeLimitMs; s.t += TickMs {
+		s.moveUnits()
 		for _, u := range s.units {
 			u.alive0 = !u.dead
 		}
@@ -108,7 +120,10 @@ func Run(defs []UnitDef, cfg Energy) Outcome {
 			if !u.alive0 || u.hp <= 0 || s.t < u.nextAt {
 				continue
 			}
-			u.nextAt = s.t + u.IntervalMs
+			// Дальность проверяется после перемещения всех героев, до расхода энергии/перезарядки.
+			if u.Melee && (u.approaching || u.target == nil || u.target.hp <= 0 || !inRange(u, u.target)) {
+				continue
+			}
 			if u.energy >= cfg.Max {
 				s.mainSkill(u)
 			} else {
@@ -139,7 +154,11 @@ func Run(defs []UnitDef, cfg Energy) Outcome {
 }
 
 func (s *sim) outcome(defs []UnitDef, r Result) Outcome {
-	return Outcome{Units: defs, Events: s.events, Result: r, Balance: BalanceVersion}
+	positions := make(map[string]Position, len(s.units))
+	for _, u := range s.units {
+		positions[u.ID] = u.pos
+	}
+	return Outcome{Units: defs, Events: s.events, Result: r, Balance: BalanceVersion, Positions: positions}
 }
 
 func (s *sim) alive(side string) int {
@@ -246,10 +265,14 @@ func (s *sim) flush(e Event) {
 }
 
 func (s *sim) basicAttack(u *unit) {
-	tg := frontTarget(s.enemiesOf(u))
+	tg := u.target
+	if !u.Melee {
+		tg = frontTarget(s.inReach(u, s.enemiesOf(u)))
+	}
 	if tg == nil {
 		return
 	}
+	u.nextAt = s.t + u.IntervalMs
 	h := s.damage(tg, u.Attack)
 	s.gain(u, float64(h.Amount)*s.cfg.PerDealt) // нанесённый урон обычной атаки даёт энергию владельцу
 	s.flush(Event{T: s.t, Type: "attack", Src: u.ID, Targets: []Hit{h}})
@@ -257,33 +280,39 @@ func (s *sim) basicAttack(u *unit) {
 
 // mainSkill расходует весь запас энергии; урон и лечение главной способности энергию владельцу не возвращают.
 func (s *sim) mainSkill(u *unit) {
+	// Цели фиксируются до траты энергии. Ближний использует удерживаемую цель.
+	enemies := s.inReach(u, s.enemiesOf(u))
+	if u.Role != Healer && len(enemies) == 0 {
+		return
+	}
+	u.nextAt = s.t + u.IntervalMs
 	u.energy = 0
 	s.touched[u.ID] = true
 	ev := Event{T: s.t, Type: "skill", Src: u.ID, Kind: "damage"}
 	mul := func(k float64) int { return int(float64(u.Attack) * k) }
 	switch u.Role {
 	case Tank: // удар по ближайшему + лечение себя на 10% (владелец не получает за это энергию)
-		if tg := frontTarget(s.enemiesOf(u)); tg != nil {
+		if tg := s.primaryTarget(u, enemies); tg != nil {
 			ev.Targets = append(ev.Targets, s.damage(tg, mul(1.5)))
 		}
 		if h, n := s.heal(u, u.MaxHP/10); n > 0 {
 			ev.Targets = append(ev.Targets, h)
 		}
 	case Fighter:
-		if tg := frontTarget(s.enemiesOf(u)); tg != nil {
+		if tg := s.primaryTarget(u, enemies); tg != nil {
 			ev.Targets = append(ev.Targets, s.damage(tg, mul(3)))
 		}
 	case Archer:
-		if tg := lowestHP(s.enemiesOf(u)); tg != nil {
+		if tg := lowestHP(enemies); tg != nil {
 			ev.Targets = append(ev.Targets, s.damage(tg, mul(2.5)))
 		}
 	case Mage:
-		for _, tg := range s.enemiesOf(u) {
+		for _, tg := range enemies {
 			ev.Targets = append(ev.Targets, s.damage(tg, mul(1.2)))
 		}
 	case Healer:
 		ev.Kind = "heal"
-		for _, a := range s.alliesOf(u) {
+		for _, a := range s.inReach(u, s.alliesOf(u)) {
 			h, n := s.heal(a, mul(1.5))
 			if a != u && n > 0 {
 				s.gain(a, float64(n)*s.cfg.PerHealed) // получатели лечения получают энергию, владелец — нет
