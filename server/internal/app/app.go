@@ -103,7 +103,11 @@ func New(b Build, cfg Config) http.Handler {
 				writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "too_many_requests"})
 				return
 			}
-			out := battle.Run(battle.PrototypeSquads(), battle.DefaultEnergy)
+			out, runErr := battle.Run(battle.PrototypeSquads(), battle.DefaultEnergy)
+			if runErr != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal"})
+				return
+			}
 			js, err := json.Marshal(out)
 			if err == nil {
 				var id string

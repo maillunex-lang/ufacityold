@@ -5,16 +5,25 @@ import (
 	"testing"
 )
 
+func runBattle(t *testing.T, defs []UnitDef, cfg Energy) Outcome {
+	t.Helper()
+	o, err := Run(defs, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return o
+}
+
 func TestDeterministic(t *testing.T) {
-	a, _ := json.Marshal(Run(PrototypeSquads(), DefaultEnergy))
-	b, _ := json.Marshal(Run(PrototypeSquads(), DefaultEnergy))
+	a, _ := json.Marshal(runBattle(t, PrototypeSquads(), DefaultEnergy))
+	b, _ := json.Marshal(runBattle(t, PrototypeSquads(), DefaultEnergy))
 	if string(a) != string(b) {
 		t.Fatal("бой недетерминирован")
 	}
 }
 
 func TestPrototypeOutcome(t *testing.T) {
-	o := Run(PrototypeSquads(), DefaultEnergy)
+	o := runBattle(t, PrototypeSquads(), DefaultEnergy)
 	t.Logf("итог: %+v, событий %d", o.Result, len(o.Events))
 	if o.Result.DurationMs > TimeLimitMs || o.Result.DurationMs <= 0 {
 		t.Fatal("длительность")
@@ -36,7 +45,7 @@ func TestPrototypeOutcome(t *testing.T) {
 
 // Инварианты: время не убывает, здоровье в пределах, мёртвые не действуют, после смерти нет событий от юнита.
 func TestInvariants(t *testing.T) {
-	o := Run(PrototypeSquads(), DefaultEnergy)
+	o := runBattle(t, PrototypeSquads(), DefaultEnergy)
 	maxhp := map[string]int{}
 	for _, u := range o.Units {
 		maxhp[u.ID] = u.MaxHP
@@ -75,7 +84,7 @@ func TestEnergyRules(t *testing.T) {
 		{ID: "e0", Name: "Мишень", Role: Tank, Side: "enemy", Slot: 0, MaxHP: 100000, Attack: 0, IntervalMs: 100000},
 	}
 	cfg := Energy{Max: 100, PerDealt: 0.1, PerTaken: 0, PerHealed: 0} // 0.1 энергии за единицу урона: 100 урона = 10 энергии, 10 ударов до полного
-	o := Run(defs, cfg)
+	o := runBattle(t, defs, cfg)
 	skills, attacksBefore := 0, 0
 	for _, e := range o.Events {
 		if e.Src != "p0" {
@@ -109,7 +118,7 @@ func TestOverhealGivesNoEnergy(t *testing.T) {
 		{ID: "e0", Name: "Мишень", Role: Tank, Side: "enemy", Slot: 0, MaxHP: 1000000, Attack: 0, IntervalMs: 100000},
 	}
 	cfg := Energy{Max: 20, PerDealt: 100, PerTaken: 0, PerHealed: 100}
-	o := Run(defs, cfg)
+	o := runBattle(t, defs, cfg)
 	for _, e := range o.Events {
 		if e.Type == "skill" {
 			if en, ok := e.Energy["p0"]; ok && en != 0 {
@@ -124,7 +133,7 @@ func TestTimeoutAttackerLoses(t *testing.T) {
 		{ID: "p0", Name: "Слабый", Role: Fighter, Side: "player", Slot: 0, MaxHP: 1000, Attack: 1, IntervalMs: 1000, Melee: true},
 		{ID: "e0", Name: "Стена", Role: Tank, Side: "enemy", Slot: 0, MaxHP: 1000000, Attack: 0, IntervalMs: 100000},
 	}
-	o := Run(defs, DefaultEnergy)
+	o := runBattle(t, defs, DefaultEnergy)
 	if o.Result.Winner != "enemy" || o.Result.Reason != "timeout" || o.Result.DurationMs != TimeLimitMs {
 		t.Fatalf("%+v", o.Result)
 	}

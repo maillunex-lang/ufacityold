@@ -1,5 +1,5 @@
 extends Node3D
-## Прототип боя (этап 1). Сервер считает бой целиком; здесь — проигрывание записи событий.
+## Проигрывание записи боя. HTTP API пока возвращает полный серверный расчёт.
 ## Модели — ВРЕМЕННЫЕ примитивы. Главная способность срабатывает автоматически (полный автомат);
 ## ручной запуск нажатием на портрет появится вместе с боем в реальном времени.
 
@@ -26,6 +26,8 @@ var inconsistencies: int = 0
 var acted_dead: Dictionary = {}
 var final_positions: Dictionary = {}
 var movement_events: int = 0
+var auto_skill_events: Array[int] = [0, 0]
+var passive_events: int = 0
 
 var timer_label: Label
 var result_label: Label
@@ -275,7 +277,11 @@ func _spawn_unit(d: Dictionary) -> void:
 		"def": d, "node": n, "mat": mat, "fill": fill, "home": n.position,
 		"pos": n.position, "move": {}, "body": body, "action": null,
 		"hp": int(d["maxHp"]), "max": int(d["maxHp"]), "dead": false, "energy": 0,
+		"passive_seen": false, "auto_ready_at": [0, 0],
 	}
+	var skills: Array = d.get("autoSkills", [])
+	for slot in range(mini(2, skills.size())):
+		units[id]["auto_ready_at"][slot] = int(skills[slot].get("cooldownMs", 0))
 	if side == "player":
 		_make_portrait(d)
 
@@ -308,6 +314,16 @@ func _apply(e: Dictionary) -> void:
 		inconsistencies += 1
 		return
 	var s: Dictionary = units[src]
+	if type == "passive":
+		# Эффективные MaxHP/Attack уже пришли в описании героя; повторно бонус не применяем.
+		var passive: Dictionary = s["def"].get("passive", {})
+		if not s["def"].get("passiveActive", false) or s["passive_seen"] or int(e["t"]) != 0:
+			inconsistencies += 1
+		if passive.get("id", "") != e.get("skillId", "") or int(s["def"].get("level", 1)) < int(passive.get("unlockLevel", 40)):
+			inconsistencies += 1
+		s["passive_seen"] = true
+		passive_events += 1
+		return
 	if type == "death":
 		s["dead"] = true
 		s["move"] = {}
@@ -326,7 +342,21 @@ func _apply(e: Dictionary) -> void:
 		movement_events += 1
 		return
 	var targets: Array = e.get("targets", [])
-	var heal := type == "skill" and str(e.get("kind", "")) == "heal"
+	var is_skill := type == "skill" or type == "auto_skill"
+	var heal := is_skill and str(e.get("kind", "")) == "heal"
+	if type == "auto_skill":
+		var slot := int(e.get("skillSlot", 0))
+		var skills: Array = s["def"].get("autoSkills", [])
+		if slot < 1 or slot > 2 or skills.size() < slot:
+			inconsistencies += 1
+		else:
+			var skill: Dictionary = skills[slot - 1]
+			if skill.get("id", "") != e.get("skillId", "") or int(s["def"].get("level", 1)) < int(skill.get("unlockLevel", 1000)):
+				inconsistencies += 1
+			if int(e["t"]) < int(s["auto_ready_at"][slot - 1]):
+				inconsistencies += 1
+			s["auto_ready_at"][slot - 1] = int(e["t"]) + int(skill["cooldownMs"])
+			auto_skill_events[slot - 1] += 1
 	_play_action(s, type, targets, heal)
 	for h in targets:
 		var tid := str(h["unit"])
@@ -382,7 +412,7 @@ func _play_action(s: Dictionary, type: String, targets: Array, _heal: bool) -> v
 	var dst := Vector3.ZERO
 	if targets.size() > 0 and units.has(str(targets[0]["unit"])) and str(targets[0]["unit"]) != str(d["id"]):
 		dst = units[str(targets[0]["unit"])]["pos"]
-	if type == "skill":
+	if type == "skill" or type == "auto_skill":
 		var tw := _tween()
 		tw.tween_property(s["mat"], "emission", Color(0.9, 0.8, 0.2), 0.15)
 		tw.tween_property(s["mat"], "emission", Color.BLACK, 0.35)
@@ -475,6 +505,8 @@ func _finish() -> void:
 	again_button.show()
 	if not final_positions.is_empty():
 		print("BATTLE_MOVEMENT_OK moves=%d inconsistencies=%d" % [movement_events, inconsistencies])
+	print("BATTLE_SKILLS_OK auto1=%d auto2=%d passives=%d inconsistencies=%d" % [
+		auto_skill_events[0], auto_skill_events[1], passive_events, inconsistencies])
 	print("BATTLE_OK winner=%s reason=%s durationMs=%d events=%d inconsistencies=%d" % [
 		winner, str(result["reason"]), int(result["durationMs"]), events.size(), inconsistencies])
 	if smoke:

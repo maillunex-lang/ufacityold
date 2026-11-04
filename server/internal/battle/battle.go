@@ -1,7 +1,7 @@
 // Package battle — серверный расчёт боя с позициями и движением.
 //
-// Бой считается целиком на сервере в игровом времени с шагом TickMs и без случайности:
-// одинаковые входные данные дают одинаковый результат. Клиент только проигрывает записанные события.
+// Пошаговое ядро и полный автомат Run используют одинаковые тики TickMs без случайности:
+// одинаковые входные данные дают одинаковый результат. HTTP-клиент пока проигрывает полную запись.
 // Параметры героев и коэффициенты энергии — ВРЕМЕННЫЙ баланс (BalanceVersion), будут выноситься в редактируемые данные.
 package battle
 
@@ -10,13 +10,13 @@ import "sort"
 const (
 	TickMs         = 100
 	TimeLimitMs    = 90_000
-	BalanceVersion = "proto-2-movement"
+	BalanceVersion = "proto-3-skills"
 )
 
 // Energy — настраиваемые коэффициенты начисления энергии (по ТЗ — настраиваются).
 type Energy struct {
 	Max       float64 // запас для главной способности
-	PerDealt  float64 // за единицу нанесённого урона (обычной атакой)
+	PerDealt  float64 // за единицу фактического урона обычной атаки/автонавыка
 	PerTaken  float64 // за единицу полученного урона
 	PerHealed float64 // за единицу фактически восстановленного здоровья
 }
@@ -35,20 +35,24 @@ const (
 
 // UnitDef — описание героя на старте боя. Slot: 0,1 — передний ряд, 2,3,4 — задний.
 type UnitDef struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	Role        Role     `json:"role"`
-	Rarity      string   `json:"rarity"`
-	Side        string   `json:"side"` // "player" | "enemy"
-	Slot        int      `json:"slot"`
-	MaxHP       int      `json:"maxHp"`
-	Attack      int      `json:"attack"`
-	IntervalMs  int      `json:"intervalMs"`
-	Melee       bool     `json:"melee"`
-	Temporary   bool     `json:"temporary"` // временная модель/герой, не финальный контент
-	Position    Position `json:"position"`  // стартовая позиция, в тысячных долях единицы Godot
-	AttackRange int      `json:"attackRange"`
-	RunSpeed    int      `json:"runSpeed"` // тысячных долей единицы в секунду; дальние не перемещаются
+	ID            string       `json:"id"`
+	Name          string       `json:"name"`
+	Role          Role         `json:"role"`
+	Rarity        string       `json:"rarity"`
+	Side          string       `json:"side"` // "player" | "enemy"
+	Slot          int          `json:"slot"`
+	MaxHP         int          `json:"maxHp"`
+	Attack        int          `json:"attack"`
+	IntervalMs    int          `json:"intervalMs"`
+	Melee         bool         `json:"melee"`
+	Temporary     bool         `json:"temporary"` // временная модель/герой, не финальный контент
+	Position      Position     `json:"position"`  // стартовая позиция, в тысячных долях единицы Godot
+	AttackRange   int          `json:"attackRange"`
+	RunSpeed      int          `json:"runSpeed"` // тысячных долей единицы в секунду; дальние не перемещаются
+	Level         int          `json:"level"`
+	AutoSkills    [2]AutoSkill `json:"autoSkills"`
+	Passive       *Passive     `json:"passive,omitempty"`
+	PassiveActive bool         `json:"passiveActive"` // рассчитано сервером; MaxHP/Attack уже учитывают пассив
 }
 
 type Hit struct {
@@ -58,13 +62,15 @@ type Hit struct {
 }
 
 type Event struct {
-	T       int            `json:"t"`
-	Type    string         `json:"type"` // move | attack | skill | death
-	Src     string         `json:"src"`
-	Kind    string         `json:"kind,omitempty"` // для skill: damage | heal
-	Targets []Hit          `json:"targets,omitempty"`
-	Energy  map[string]int `json:"energy,omitempty"` // энергия юнитов, изменившаяся этим событием
-	Move    *Movement      `json:"move,omitempty"`
+	T         int            `json:"t"`
+	Type      string         `json:"type"` // move | attack | skill (главная) | auto_skill | passive | death
+	Src       string         `json:"src"`
+	Kind      string         `json:"kind,omitempty"` // для skill: damage | heal
+	Targets   []Hit          `json:"targets,omitempty"`
+	Energy    map[string]int `json:"energy,omitempty"` // энергия юнитов, изменившаяся этим событием
+	Move      *Movement      `json:"move,omitempty"`
+	SkillID   string         `json:"skillId,omitempty"`
+	SkillSlot int            `json:"skillSlot,omitempty"` // 1 или 2 только для автонавыка
 }
 
 type Result struct {
@@ -87,81 +93,36 @@ type unit struct {
 	energy      float64
 	nextAt      int
 	dead        bool
-	alive0      bool // жив в начале текущего тика
 	pos         Position
 	target      *unit
 	approach    int
 	approaching bool
 	moveCredit  float64 // неиспользованная длина шага: медленный герой не застревает на округлении координат
+	autoAt      [2]int
 }
 
-type sim struct {
-	cfg     Energy
-	units   []*unit
-	events  []Event
-	t       int
-	touched map[string]bool
+// Battle принадлежит одному исполнителю. Для разных боёв создаются независимые экземпляры.
+type Battle struct {
+	cfg       Energy
+	units     []*unit
+	events    []Event
+	t         int
+	touched   map[string]bool
+	defs      []UnitDef
+	balance   string
+	result    *Result
+	delivered int
 }
 
-// Run рассчитывает бой.
-func Run(defs []UnitDef, cfg Energy) Outcome {
-	defs = prepare(defs)
-	s := &sim{cfg: cfg, touched: map[string]bool{}}
-	for _, d := range defs {
-		s.units = append(s.units, &unit{UnitDef: d, hp: d.MaxHP, nextAt: d.IntervalMs, pos: d.Position, approach: -1})
-	}
-	var res Result
-	for s.t = TickMs; s.t <= TimeLimitMs; s.t += TickMs {
-		s.moveUnits()
-		for _, u := range s.units {
-			u.alive0 = !u.dead
-		}
-		for _, u := range s.units { // порядок — по входному списку: детерминированно
-			if !u.alive0 || u.hp <= 0 || s.t < u.nextAt {
-				continue
-			}
-			// Дальность проверяется после перемещения всех героев, до расхода энергии/перезарядки.
-			if u.Melee && (u.approaching || u.target == nil || u.target.hp <= 0 || !inRange(u, u.target)) {
-				continue
-			}
-			if u.energy >= cfg.Max {
-				s.mainSkill(u)
-			} else {
-				s.basicAttack(u)
-			}
-		}
-		for _, u := range s.units { // смерти фиксируются в конце тика (одновременные убийства возможны)
-			if u.hp <= 0 && !u.dead {
-				u.dead = true
-				s.events = append(s.events, Event{T: s.t, Type: "death", Src: u.ID})
-			}
-		}
-		p, e := s.alive("player"), s.alive("enemy")
-		if p == 0 || e == 0 {
-			switch {
-			case p > 0:
-				res = Result{"player", "elimination", s.t}
-			case e > 0:
-				res = Result{"enemy", "elimination", s.t}
-			default:
-				res = Result{"enemy", "draw", s.t} // взаимное уничтожение: атакующий проигрывает
-			}
-			return s.outcome(defs, res)
-		}
-	}
-	// лимит времени: атакующий (игрок) проигрывает
-	return s.outcome(defs, Result{"enemy", "timeout", TimeLimitMs})
-}
-
-func (s *sim) outcome(defs []UnitDef, r Result) Outcome {
+func (s *Battle) outcome() Outcome {
 	positions := make(map[string]Position, len(s.units))
 	for _, u := range s.units {
 		positions[u.ID] = u.pos
 	}
-	return Outcome{Units: defs, Events: s.events, Result: r, Balance: BalanceVersion, Positions: positions}
+	return Outcome{Units: cloneDefs(s.defs), Events: cloneEvents(s.events), Result: *s.result, Balance: s.balance, Positions: positions}
 }
 
-func (s *sim) alive(side string) int {
+func (s *Battle) alive(side string) int {
 	n := 0
 	for _, u := range s.units {
 		if u.Side == side && !u.dead {
@@ -171,14 +132,14 @@ func (s *sim) alive(side string) int {
 	return n
 }
 
-func (s *sim) enemiesOf(u *unit) []*unit {
+func (s *Battle) enemiesOf(u *unit) []*unit {
 	return s.pick(func(x *unit) bool { return x.Side != u.Side && x.hp > 0 })
 }
-func (s *sim) alliesOf(u *unit) []*unit {
+func (s *Battle) alliesOf(u *unit) []*unit {
 	return s.pick(func(x *unit) bool { return x.Side == u.Side && x.hp > 0 })
 }
 
-func (s *sim) pick(f func(*unit) bool) []*unit {
+func (s *Battle) pick(f func(*unit) bool) []*unit {
 	var out []*unit
 	for _, u := range s.units {
 		if f(u) {
@@ -216,9 +177,9 @@ func lowestHP(c []*unit) *unit {
 	return best
 }
 
-func (s *sim) energyOf(u *unit) int { return int(u.energy) }
+func (s *Battle) energyOf(u *unit) int { return int(u.energy) }
 
-func (s *sim) gain(u *unit, v float64) {
+func (s *Battle) gain(u *unit, v float64) {
 	if u.hp <= 0 && u.dead {
 		return
 	}
@@ -230,7 +191,7 @@ func (s *sim) gain(u *unit, v float64) {
 }
 
 // damage наносит урон; возвращает фактический. Энергия цели растёт от полученного урона.
-func (s *sim) damage(t *unit, amount int) Hit {
+func (s *Battle) damage(t *unit, amount int) Hit {
 	if amount > t.hp {
 		amount = t.hp
 	}
@@ -240,7 +201,7 @@ func (s *sim) damage(t *unit, amount int) Hit {
 }
 
 // heal лечит; энергию даёт только фактически восстановленное здоровье (избыточное не считается).
-func (s *sim) heal(t *unit, amount int) (Hit, int) {
+func (s *Battle) heal(t *unit, amount int) (Hit, int) {
 	room := t.MaxHP - t.hp
 	if amount > room {
 		amount = room
@@ -249,7 +210,7 @@ func (s *sim) heal(t *unit, amount int) (Hit, int) {
 	return Hit{Unit: t.ID, Amount: amount, HP: t.hp}, amount
 }
 
-func (s *sim) flush(e Event) {
+func (s *Battle) flush(e Event) {
 	if len(s.touched) > 0 {
 		e.Energy = map[string]int{}
 		for id := range s.touched {
@@ -264,7 +225,7 @@ func (s *sim) flush(e Event) {
 	s.events = append(s.events, e)
 }
 
-func (s *sim) basicAttack(u *unit) {
+func (s *Battle) basicAttack(u *unit) {
 	tg := u.target
 	if !u.Melee {
 		tg = frontTarget(s.inReach(u, s.enemiesOf(u)))
@@ -279,11 +240,11 @@ func (s *sim) basicAttack(u *unit) {
 }
 
 // mainSkill расходует весь запас энергии; урон и лечение главной способности энергию владельцу не возвращают.
-func (s *sim) mainSkill(u *unit) {
+func (s *Battle) mainSkill(u *unit) bool {
 	// Цели фиксируются до траты энергии. Ближний использует удерживаемую цель.
 	enemies := s.inReach(u, s.enemiesOf(u))
 	if u.Role != Healer && len(enemies) == 0 {
-		return
+		return false
 	}
 	u.nextAt = s.t + u.IntervalMs
 	u.energy = 0
@@ -321,7 +282,8 @@ func (s *sim) mainSkill(u *unit) {
 		}
 	}
 	if len(ev.Targets) == 0 {
-		return
+		return false
 	}
 	s.flush(ev)
+	return true
 }
