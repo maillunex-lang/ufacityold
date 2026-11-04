@@ -21,3 +21,9 @@
 - Выполнено владельцем: install.sh (порт 18741), резервная копия /etc/nginx, include в sites-enabled/agroapp, `nginx -t` OK, reload OK.
 - Проверка после reload: https://tts-ufa.ru/ отвечает как до (HTTP 405 на HEAD); `/LunexGame/` → 502 (службы ещё нет, nginx доходит до 127.0.0.1:18741).
 - Ключ доставки и секреты GitHub добавлены владельцем. Ожидается первый автодеплой.
+
+## 2026-11-04 — первый автодеплой
+- Push 7ba7d6f в main → на VPS развёрнут commit 7ba7d6f0d7e6d16448032d621604f318ab1296c2.
+- https://tts-ufa.ru/LunexGame/api/version → этот commit; /api/health → ok; /LunexGame/ → 200; /LunexGame/admin/ → 404; https://tts-ufa.ru/ → прежний ответ (HEAD 405).
+- Не проверено: автоматический откат при провале health; миграции БД (БД ещё нет); сохранность каждого маршрута agroapp/ufagame по отдельности.
+- Следующий шаг: тест отката (намеренно «плохой» релиз в отдельной проверке), затем этап 1.
