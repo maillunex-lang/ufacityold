@@ -1,0 +1,36 @@
+name: Godot и Android SDK
+description: Устанавливает закреплённый Godot с шаблонами экспорта, настраивает Android SDK и одноразовый debug-ключ (не секрет).
+runs:
+  using: composite
+  steps:
+    - name: Установить Godot и шаблоны экспорта
+      shell: bash
+      run: |
+        base="https://github.com/godotengine/godot-builds/releases/download/${GODOT_VERSION}"
+        mkdir -p "$RUNNER_TEMP/godot" ~/.local/share/godot/export_templates
+        curl -fsSL "$base/Godot_v${GODOT_VERSION}_linux.x86_64.zip" -o "$RUNNER_TEMP/godot.zip"
+        curl -fsSL "$base/Godot_v${GODOT_VERSION}_export_templates.tpz" -o "$RUNNER_TEMP/templates.zip"
+        unzip -q "$RUNNER_TEMP/godot.zip" -d "$RUNNER_TEMP/godot"
+        unzip -q "$RUNNER_TEMP/templates.zip" -d "$RUNNER_TEMP/tpl"
+        mv "$RUNNER_TEMP/tpl/templates" ~/.local/share/godot/export_templates/${GODOT_TEMPLATES_DIR}
+        echo "GODOT=$RUNNER_TEMP/godot/Godot_v${GODOT_VERSION}_linux.x86_64" >> "$GITHUB_ENV"
+        chmod +x "$RUNNER_TEMP/godot/Godot_v${GODOT_VERSION}_linux.x86_64"
+    - name: Настроить Android SDK и одноразовый debug-ключ
+      shell: bash
+      run: |
+        SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"; JDK="${JAVA_HOME_17_X64:-$JAVA_HOME}"
+        "$JDK/bin/keytool" -genkeypair -keystore "$RUNNER_TEMP/debug.keystore" -alias androiddebugkey \
+          -storepass android -keypass android -keyalg RSA -keysize 2048 -validity 10000 \
+          -dname "CN=LunexGame CI debug,O=LunexGame,C=RU"
+        mkdir -p ~/.config/godot
+        cat > ~/.config/godot/editor_settings-${GODOT_TEMPLATES_DIR%.stable}.tres <<TRES
+        [gd_resource type="EditorSettings" format=3]
+
+        [resource]
+        export/android/java_sdk_path = "$JDK"
+        export/android/android_sdk_path = "$SDK"
+        export/android/debug_keystore = "$RUNNER_TEMP/debug.keystore"
+        export/android/debug_keystore_user = "androiddebugkey"
+        export/android/debug_keystore_pass = "android"
+        TRES
+        echo "SDK=$SDK" >> "$GITHUB_ENV"

@@ -3,9 +3,9 @@ name: client-android
 on:
   push:
     branches: [main]
-    paths: ['client/**', 'server/**', 'tools/**', '.github/workflows/client-android.yml']
+    paths: ['client/**', 'server/**', 'tools/**', '.github/workflows/client-android.yml', '.github/actions/**']
   pull_request:
-    paths: ['client/**', 'server/**', 'tools/**', '.github/workflows/client-android.yml']
+    paths: ['client/**', 'server/**', 'tools/**', '.github/workflows/client-android.yml', '.github/actions/**']
   workflow_dispatch:
 
 permissions:
@@ -31,37 +31,7 @@ jobs:
         working-directory: server
         run: CGO_ENABLED=0 go build -o "$RUNNER_TEMP/lunexgame-server" ./cmd/lunexgame
 
-      - name: Установить Godot и шаблоны экспорта
-        run: |
-          base="https://github.com/godotengine/godot-builds/releases/download/${GODOT_VERSION}"
-          mkdir -p "$RUNNER_TEMP/godot" ~/.local/share/godot/export_templates
-          curl -fsSL "$base/Godot_v${GODOT_VERSION}_linux.x86_64.zip" -o "$RUNNER_TEMP/godot.zip"
-          curl -fsSL "$base/Godot_v${GODOT_VERSION}_export_templates.tpz" -o "$RUNNER_TEMP/templates.zip"
-          unzip -q "$RUNNER_TEMP/godot.zip" -d "$RUNNER_TEMP/godot"
-          unzip -q "$RUNNER_TEMP/templates.zip" -d "$RUNNER_TEMP/tpl"
-          mv "$RUNNER_TEMP/tpl/templates" ~/.local/share/godot/export_templates/${GODOT_TEMPLATES_DIR}
-          echo "GODOT=$RUNNER_TEMP/godot/Godot_v${GODOT_VERSION}_linux.x86_64" >> "$GITHUB_ENV"
-          chmod +x "$RUNNER_TEMP/godot/Godot_v${GODOT_VERSION}_linux.x86_64"
-
-      - name: Настроить Android SDK и временный ключ подписи (одноразовый, не секрет)
-        run: |
-          SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"; JDK="${JAVA_HOME_17_X64:-$JAVA_HOME}"
-          "$JDK/bin/keytool" -genkeypair -keystore "$RUNNER_TEMP/debug.keystore" -alias androiddebugkey \
-            -storepass android -keypass android -keyalg RSA -keysize 2048 -validity 10000 \
-            -dname "CN=LunexGame CI debug,O=LunexGame,C=RU"
-          mkdir -p ~/.config/godot
-          cat > ~/.config/godot/editor_settings-4.7.tres <<TRES
-          [gd_resource type="EditorSettings" format=3]
-
-          [resource]
-          export/android/java_sdk_path = "$JDK"
-          export/android/android_sdk_path = "$SDK"
-          export/android/debug_keystore = "$RUNNER_TEMP/debug.keystore"
-          export/android/debug_keystore_user = "androiddebugkey"
-          export/android/debug_keystore_pass = "android"
-          TRES
-          sed -i 's/^          //' ~/.config/godot/editor_settings-4.7.tres
-          echo "SDK=$SDK" >> "$GITHUB_ENV"
+      - uses: ./.github/actions/setup-godot-android
 
       - name: Импорт ресурсов проекта
         run: '"$GODOT" --headless --path client --import'
@@ -85,6 +55,20 @@ jobs:
           grep -q "android.permission.INTERNET" build/badging.txt
           grep -q "arm64-v8a" build/badging.txt
 
+      - name: Проверка release-экспорта и подписи (одноразовый ключ, артефакт не публикуется)
+        env:
+          GODOT_ANDROID_KEYSTORE_RELEASE_PATH: ${{ runner.temp }}/debug.keystore
+          GODOT_ANDROID_KEYSTORE_RELEASE_USER: androiddebugkey
+          GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD: android
+        run: |
+          sed -i "s/^version\/code=.*/version\/code=${GITHUB_RUN_NUMBER}/" client/export_presets.cfg
+          "$GODOT" --headless --path client --export-release "Android" "$GITHUB_WORKSPACE/build/release-check.apk"
+          apksigner=$(ls "$SDK"/build-tools/*/apksigner | sort -V | tail -1)
+          "$apksigner" verify --print-certs "build/release-check.apk" | head -3
+          size=$(stat -c %s build/release-check.apk); echo "release-APK: $size байт"
+          [ "$size" -le "$APK_MAX_BYTES" ]
+          rm -f build/release-check.apk
+
       - name: Экспорт Web (PWA) и контроль размера
         run: |
           mkdir -p build/web
@@ -107,3 +91,78 @@ jobs:
             build/lunexgame-debug.apk
             build/badging.txt
           retention-days: 14
+
+  release-apk:
+    # Подписанный ПОСТОЯННЫМ ключом APK. Только для push в main и только в окружении android-signing
+    # (секреты не доступны проверкам pull request).
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: android-signing
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Проверить, что ключ настроен
+        id: key
+        env:
+          KS: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          PW: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          AL: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          if [ -z "$KS" ] || [ -z "$PW" ] || [ -z "$AL" ]; then
+            echo "::notice::Постоянный ключ подписи не настроен (секреты окружения android-signing). Release-APK не собирается. См. docs/SIGNING.md."
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.key.outputs.configured == 'true'
+        uses: ./.github/actions/setup-godot-android
+      - name: Подготовить ключ
+        if: steps.key.outputs.configured == 'true'
+        env:
+          KS: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          umask 077
+          printf '%s' "$KS" | base64 -d > "$RUNNER_TEMP/release.p12"
+      - name: Импорт ресурсов проекта
+        if: steps.key.outputs.configured == 'true'
+        run: '"$GODOT" --headless --path client --import'
+      - name: Экспорт release-APK
+        if: steps.key.outputs.configured == 'true'
+        env:
+          GODOT_ANDROID_KEYSTORE_RELEASE_PATH: ${{ runner.temp }}/release.p12
+          GODOT_ANDROID_KEYSTORE_RELEASE_USER: ${{ secrets.ANDROID_KEY_ALIAS }}
+          GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          sed -i "s/^version\/code=.*/version\/code=${GITHUB_RUN_NUMBER}/; s/^version\/name=.*/version\/name=\"0.1.${GITHUB_RUN_NUMBER}\"/" client/export_presets.cfg
+          mkdir -p build
+          "$GODOT" --headless --path client --export-release "Android" "$GITHUB_WORKSPACE/build/lunexgame.apk"
+      - name: Проверить подпись и размер
+        if: steps.key.outputs.configured == 'true'
+        env:
+          EXPECTED: ${{ vars.ANDROID_CERT_SHA256 }}
+        run: |
+          apksigner=$(ls "$SDK"/build-tools/*/apksigner | sort -V | tail -1)
+          "$apksigner" verify --print-certs build/lunexgame.apk | tee build/cert.txt
+          actual=$(grep -m1 "certificate SHA-256 digest" build/cert.txt | sed 's/.*: //' | tr -d ':' | tr 'a-f' 'A-F')
+          want=$(printf '%s' "$EXPECTED" | tr -d ': ' | tr 'a-f' 'A-F')
+          if [ -z "$want" ]; then echo "::warning::Переменная ANDROID_CERT_SHA256 не задана — отпечаток не сверяется (задайте её, см. docs/SIGNING.md)"
+          elif [ "$actual" != "$want" ]; then echo "ОТПЕЧАТОК КЛЮЧА НЕ СОВПАЛ: ожидался $want, получен $actual"; exit 1
+          else echo "отпечаток ключа совпал"; fi
+          size=$(stat -c %s build/lunexgame.apk); echo "APK: $size байт, лимит $APK_MAX_BYTES"
+          [ "$size" -le "$APK_MAX_BYTES" ]
+          "$(ls "$SDK"/build-tools/*/aapt2 | sort -V | tail -1)" dump badging build/lunexgame.apk | grep -E "^package" | tee build/badging.txt
+      - uses: actions/upload-artifact@v4
+        if: steps.key.outputs.configured == 'true'
+        with:
+          name: lunexgame-release-apk-${{ github.sha }}
+          path: |
+            build/lunexgame.apk
+            build/cert.txt
+            build/badging.txt
+          retention-days: 30
+      - name: Удалить ключ с раннера
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.p12"
