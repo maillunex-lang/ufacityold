@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"lunexgame/internal/app"
+	"lunexgame/internal/store"
 )
 
 // Задаются через -ldflags при сборке.
@@ -25,6 +26,12 @@ func main() {
 	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
 		log.Fatalf("LUNEXGAME_LISTEN должен быть loopback-адресом, получено %q", addr)
 	}
+	st, err := store.Open(cfg.DBPath, cfg.BackupDir)
+	if err != nil {
+		log.Fatalf("БД: %v", err)
+	}
+	defer st.Close()
+	cfg.Store = st
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           app.New(app.Build{Version: version, Commit: commit, BuildTime: buildTime}, cfg),

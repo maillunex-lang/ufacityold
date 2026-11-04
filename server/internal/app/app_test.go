@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"lunexgame/internal/store"
 )
 
 func srv(t *testing.T) http.Handler {
@@ -48,5 +50,51 @@ func TestVersion(t *testing.T) {
 	var b Build
 	if err := json.Unmarshal(get(srv(t), "/LunexGame/api/version").Body.Bytes(), &b); err != nil || b.Commit != "abc" {
 		t.Fatalf("%v %+v", err, b)
+	}
+}
+
+func TestGuestFlow(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "t.db"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	h := New(Build{Version: "t", Commit: "abc"}, Config{Store: st})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("POST", "/LunexGame/api/auth/guest", nil))
+	if w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	var r struct {
+		AccountID int64  `json:"accountId"`
+		Token     string `json:"token"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &r)
+	req := httptest.NewRequest("GET", "/LunexGame/api/me", nil)
+	req.Header.Set("Authorization", "Bearer "+r.Token)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatal("me", w.Code)
+	}
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/LunexGame/api/me", nil))
+	if w.Code != 401 {
+		t.Fatal("без токена", w.Code)
+	}
+	if get(h, "/LunexGame/api/health").Code != 200 {
+		t.Fatal("health")
+	}
+	// лимит: 10 в минуту с одного адреса (одна уже потрачена)
+	limited := false
+	for i := 0; i < 12; i++ {
+		w = httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest("POST", "/LunexGame/api/auth/guest", nil))
+		if w.Code == 429 {
+			limited = true
+		}
+	}
+	if !limited {
+		t.Fatal("лимит не сработал")
 	}
 }

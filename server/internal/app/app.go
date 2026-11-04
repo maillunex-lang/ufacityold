@@ -4,11 +4,15 @@ package app
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
+
+	"lunexgame/internal/store"
 )
 
 const Prefix = "/LunexGame"
@@ -21,6 +25,9 @@ type Build struct {
 }
 
 type Config struct {
+	Store     *store.Store
+	DBPath    string
+	BackupDir string
 	AssetsDir string // каталог загружаемых ресурсов (вне релизов, не перезаписывается деплоем)
 }
 
@@ -34,14 +41,44 @@ func New(b Build, cfg Config) http.Handler {
 		_, _ = w.Write([]byte(statusPage(b)))
 	})
 	mux.HandleFunc("GET "+Prefix+"/api/health", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"status":        "ok",
-			"uptimeSeconds": int(time.Since(started).Seconds()),
-		})
+		out := map[string]any{"status": "ok", "uptimeSeconds": int(time.Since(started).Seconds())}
+		code := http.StatusOK
+		if cfg.Store != nil {
+			if v, err := cfg.Store.SchemaVersion(); err != nil {
+				out["status"], out["db"], code = "error", "unavailable", http.StatusServiceUnavailable
+			} else {
+				out["db"], out["schemaVersion"] = "ok", v
+			}
+		}
+		writeJSON(w, code, out)
 	})
 	mux.HandleFunc("GET "+Prefix+"/api/version", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, b)
 	})
+	if cfg.Store != nil {
+		lim := newLimiter(10, time.Minute)
+		mux.HandleFunc("POST "+Prefix+"/api/auth/guest", func(w http.ResponseWriter, r *http.Request) {
+			if !lim.allow(clientIP(r)) {
+				writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "too_many_requests"})
+				return
+			}
+			id, tok, err := cfg.Store.CreateGuest()
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal"})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"accountId": id, "token": tok})
+		})
+		mux.HandleFunc("GET "+Prefix+"/api/me", func(w http.ResponseWriter, r *http.Request) {
+			tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+			id, err := cfg.Store.AccountByToken(tok)
+			if err != nil {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"accountId": id})
+		})
+	}
 	// Раздача ресурсов (основа для загрузчика клиента). Каталог пуст, пока нет контента.
 	if cfg.AssetsDir != "" {
 		fs := http.StripPrefix(Prefix+"/assets/", http.FileServer(http.Dir(cfg.AssetsDir)))
@@ -90,6 +127,49 @@ main{padding:24px;max-width:480px}h1{color:#d4af37;margin:0 0 8px}.ok{color:#3fe
 </main></body></html>`
 }
 
+// clientIP: за nginx на loopback доверяем X-Real-IP; напрямую — адрес соединения.
+func clientIP(r *http.Request) string {
+	host, _, _ := net.SplitHostPort(r.RemoteAddr)
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		if v := r.Header.Get("X-Real-IP"); v != "" {
+			return v
+		}
+	}
+	return host
+}
+
+type limiter struct {
+	mu   sync.Mutex
+	n    int
+	win  time.Duration
+	hits map[string][]time.Time
+}
+
+func newLimiter(n int, win time.Duration) *limiter {
+	return &limiter{n: n, win: win, hits: map[string][]time.Time{}}
+}
+
+func (l *limiter) allow(key string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := time.Now()
+	kept := l.hits[key][:0]
+	for _, t := range l.hits[key] {
+		if now.Sub(t) < l.win {
+			kept = append(kept, t)
+		}
+	}
+	if len(kept) >= l.n {
+		l.hits[key] = kept
+		return false
+	}
+	l.hits[key] = append(kept, now)
+	if len(l.hits) > 10000 { // защита памяти
+		l.hits = map[string][]time.Time{key: l.hits[key]}
+	}
+	return true
+}
+
 // FromEnv читает конфигурацию из окружения.
 func FromEnv() (addr string, cfg Config) {
 	addr = os.Getenv("LUNEXGAME_LISTEN")
@@ -97,5 +177,13 @@ func FromEnv() (addr string, cfg Config) {
 		addr = "127.0.0.1:18741"
 	}
 	cfg.AssetsDir = os.Getenv("LUNEXGAME_ASSETS_DIR")
+	cfg.DBPath = os.Getenv("LUNEXGAME_DB")
+	if cfg.DBPath == "" {
+		cfg.DBPath = "./data/lunexgame.db"
+		if st, err := os.Stat("/opt/lunexgame/data"); err == nil && st.IsDir() {
+			cfg.DBPath = "/opt/lunexgame/data/lunexgame.db"
+		}
+	}
+	cfg.BackupDir = filepath.Join(filepath.Dir(cfg.DBPath), "backups")
 	return
 }

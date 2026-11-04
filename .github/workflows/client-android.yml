@@ -1,0 +1,104 @@
+name: client-android
+
+on:
+  push:
+    branches: [main]
+    paths: ['client/**', 'server/**', '.github/workflows/client-android.yml']
+  pull_request:
+    paths: ['client/**', 'server/**', '.github/workflows/client-android.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GODOT_VERSION: 4.5-stable        # закреплено; смена версии — отдельное решение
+  GODOT_TEMPLATES_DIR: 4.5.stable
+  APK_MAX_BYTES: 94371840          # 90 МиБ, лимит из ТЗ
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+
+      - name: Собрать сервер для интеграционной проверки клиента
+        working-directory: server
+        run: CGO_ENABLED=0 go build -o "$RUNNER_TEMP/lunexgame-server" ./cmd/lunexgame
+
+      - name: Установить Godot и шаблоны экспорта
+        run: |
+          base="https://github.com/godotengine/godot-builds/releases/download/${GODOT_VERSION}"
+          mkdir -p "$RUNNER_TEMP/godot" ~/.local/share/godot/export_templates
+          curl -fsSL "$base/Godot_v${GODOT_VERSION}_linux.x86_64.zip" -o "$RUNNER_TEMP/godot.zip"
+          curl -fsSL "$base/Godot_v${GODOT_VERSION}_export_templates.tpz" -o "$RUNNER_TEMP/templates.zip"
+          unzip -q "$RUNNER_TEMP/godot.zip" -d "$RUNNER_TEMP/godot"
+          unzip -q "$RUNNER_TEMP/templates.zip" -d "$RUNNER_TEMP/tpl"
+          mv "$RUNNER_TEMP/tpl/templates" ~/.local/share/godot/export_templates/${GODOT_TEMPLATES_DIR}
+          echo "GODOT=$RUNNER_TEMP/godot/Godot_v${GODOT_VERSION}_linux.x86_64" >> "$GITHUB_ENV"
+          chmod +x "$RUNNER_TEMP/godot/Godot_v${GODOT_VERSION}_linux.x86_64"
+
+      - name: Настроить Android SDK и временный ключ подписи (одноразовый, не секрет)
+        run: |
+          SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"; JDK="${JAVA_HOME_17_X64:-$JAVA_HOME}"
+          "$JDK/bin/keytool" -genkeypair -keystore "$RUNNER_TEMP/debug.keystore" -alias androiddebugkey \
+            -storepass android -keypass android -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=LunexGame CI debug,O=LunexGame,C=RU"
+          mkdir -p ~/.config/godot
+          cat > ~/.config/godot/editor_settings-4.5.tres <<TRES
+          [gd_resource type="EditorSettings" format=3]
+
+          [resource]
+          export/android/java_sdk_path = "$JDK"
+          export/android/android_sdk_path = "$SDK"
+          export/android/debug_keystore = "$RUNNER_TEMP/debug.keystore"
+          export/android/debug_keystore_user = "androiddebugkey"
+          export/android/debug_keystore_pass = "android"
+          TRES
+          sed -i 's/^          //' ~/.config/godot/editor_settings-4.5.tres
+          echo "SDK=$SDK" >> "$GITHUB_ENV"
+
+      - name: Импорт ресурсов проекта
+        run: '"$GODOT" --headless --path client --import'
+
+      - name: Интеграционная проверка (клиент Godot ↔ настоящий сервер)
+        run: |
+          LUNEXGAME_LISTEN=127.0.0.1:18742 LUNEXGAME_DB="$RUNNER_TEMP/smoke.db" "$RUNNER_TEMP/lunexgame-server" &
+          srv=$!
+          for i in $(seq 20); do curl -fs http://127.0.0.1:18742/LunexGame/api/health >/dev/null && break; sleep 0.5; done
+          set +e
+          LUNEXGAME_BASE_URL=http://127.0.0.1:18742/LunexGame LUNEXGAME_SMOKE=1 \
+            timeout 90 "$GODOT" --headless --path client 2>&1 | tee "$RUNNER_TEMP/smoke.log"
+          rc=${PIPESTATUS[0]}
+          kill $srv
+          grep -q "BOOT_OK account=1" "$RUNNER_TEMP/smoke.log" || { echo "нет BOOT_OK"; exit 1; }
+          exit $rc
+
+      - name: Экспорт Android APK (arm64-v8a, debug)
+        run: |
+          mkdir -p build
+          "$GODOT" --headless --path client --export-debug "Android" "$GITHUB_WORKSPACE/build/lunexgame-debug.apk"
+
+      - name: Проверка размера и содержимого APK
+        run: |
+          f=build/lunexgame-debug.apk
+          size=$(stat -c %s "$f"); echo "Размер APK: $size байт ($((size/1024/1024)) МиБ), лимит $APK_MAX_BYTES"
+          [ "$size" -le "$APK_MAX_BYTES" ] || { echo "APK больше лимита"; exit 1; }
+          aapt2=$(ls "$SDK"/build-tools/*/aapt2 | sort -V | tail -1)
+          "$aapt2" dump badging "$f" | grep -E "^(package|sdkVersion|targetSdkVersion|uses-permission|native-code)" | tee build/badging.txt
+          grep -q "name='com.lunexgame.samraya'" build/badging.txt
+          grep -q "android.permission.INTERNET" build/badging.txt
+          grep -q "arm64-v8a" build/badging.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lunexgame-debug-apk-${{ github.sha }}
+          path: |
+            build/lunexgame-debug.apk
+            build/badging.txt
+          retention-days: 14
