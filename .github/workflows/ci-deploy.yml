@@ -1,0 +1,86 @@
+name: ci-deploy
+
+on:
+  push:
+    branches: [main]        # фактическая основная ветка выбирается владельцем; см. docs/DEPLOYMENT.md
+  pull_request:             # PR только проверяются; секреты PR не передаются
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache-dependency-path: server/go.mod
+      - name: gofmt
+        working-directory: server
+        run: test -z "$(gofmt -l .)"
+      - name: vet
+        working-directory: server
+        run: go vet ./...
+      - name: test
+        working-directory: server
+        run: go test -race ./...
+      - name: build
+        working-directory: server
+        env:
+          CGO_ENABLED: '0'
+          GOOS: linux
+          GOARCH: ${{ vars.DEPLOY_GOARCH || 'amd64' }}
+        run: |
+          mkdir -p ../build
+          go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_SHA::7} -X main.commit=${GITHUB_SHA} -X main.buildTime=$(date -u +%FT%TZ)" -o ../build/lunexgame ./cmd/lunexgame
+          (cd ../build && sha256sum lunexgame | cut -d' ' -f1 > lunexgame.sha256)
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'push'
+        with:
+          name: lunexgame-${{ github.sha }}
+          path: build/
+          retention-days: 7
+
+  deploy:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    environment: production
+    concurrency:
+      group: lunexgame-deploy
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: lunexgame-${{ github.sha }}
+          path: build
+      - name: Закрепить host key и ключ доставки
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}   # строка known_hosts, снятая и сверенная владельцем
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_deploy && chmod 600 ~/.ssh/id_deploy
+      - name: Доставка и проверка (откат выполняет сервер)
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          USER_: ${{ secrets.DEPLOY_USER }}
+          PUBLIC_URL: ${{ vars.PUBLIC_BASE_URL || 'https://tts-ufa.ru/LunexGame' }}
+        run: |
+          SUM=$(cat build/lunexgame.sha256)
+          ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes \
+            "$USER_@$HOST" "deploy $GITHUB_SHA $SUM" < build/lunexgame
+          for i in $(seq 10); do
+            v=$(curl -fsS "$PUBLIC_URL/api/version" || true)
+            echo "$v" | grep -q "\"commit\":\"$GITHUB_SHA\"" && curl -fsS "$PUBLIC_URL/api/health" && exit 0
+            sleep 3
+          done
+          echo "публичная проверка version/health не прошла" >&2; exit 1
+      - name: Очистка ключей
+        if: always()
+        run: rm -f ~/.ssh/id_deploy

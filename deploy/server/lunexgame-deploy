@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Принимающий скрипт доставки. Устанавливается root-ом в /opt/lunexgame/bin/ (не редактируется
+# пользователем доставки) и вызывается как forced command в authorized_keys:
+#   command="/opt/lunexgame/bin/lunexgame-deploy",restrict ssh-ed25519 AAAA... lunexgame-deploy
+# Протокол: SSH_ORIGINAL_COMMAND="deploy <commit-sha-40hex> <sha256-бинарника>", бинарник — в stdin.
+set -euo pipefail
+umask 027
+ROOT=/opt/lunexgame
+PORT_FILE=$ROOT/etc/port
+read -r CMD SHA SUM EXTRA <<<"${SSH_ORIGINAL_COMMAND:-}"
+[[ "$CMD" == deploy && -z "${EXTRA:-}" && "$SHA" =~ ^[0-9a-f]{40}$ && "$SUM" =~ ^[0-9a-f]{64}$ ]] || { echo "bad command" >&2; exit 2; }
+
+exec 9>"$ROOT/deploy.lock"
+flock -n 9 || { echo "другой деплой выполняется" >&2; exit 3; }
+
+REL=$ROOT/releases/$SHA
+TMP=$(mktemp "$ROOT/releases/.incoming.XXXXXX")
+trap 'rm -f "$TMP"' EXIT
+head -c 104857600 >"$TMP"   # лимит 100 МБ
+[[ "$(sha256sum "$TMP" | cut -d' ' -f1)" == "$SUM" ]] || { echo "sha256 не совпал" >&2; exit 4; }
+mkdir -p "$REL"; install -m 0755 "$TMP" "$REL/lunexgame"
+
+PREV=$(readlink "$ROOT/current" || true)
+ln -sfn "$REL" "$ROOT/current.new"; mv -Tf "$ROOT/current.new" "$ROOT/current"
+
+health() { # ждём до 30 с, коммит должен совпасть
+  local p; p=$(cat "$PORT_FILE")
+  for _ in $(seq 30); do
+    if curl -fsS --max-time 2 "http://127.0.0.1:$p/LunexGame/api/health" >/dev/null 2>&1 &&
+       curl -fsS --max-time 2 "http://127.0.0.1:$p/LunexGame/api/version" 2>/dev/null | grep -q "\"commit\":\"$SHA\""; then return 0; fi
+    sleep 1
+  done; return 1
+}
+sudo -n /usr/bin/systemctl restart lunexgame.service
+if health; then
+  echo "OK $SHA"
+  # хранить 5 последних релизов, текущий и предыдущий не трогать
+  ls -1dt "$ROOT"/releases/*/ | tail -n +6 | while read -r d; do
+    [[ "${d%/}" == "$PREV" || "${d%/}" == "$REL" ]] || rm -rf -- "$d"; done
+  exit 0
+fi
+echo "health не прошёл — откат на ${PREV:-<нет>}" >&2
+if [[ -n "$PREV" ]]; then
+  ln -sfn "$PREV" "$ROOT/current.new"; mv -Tf "$ROOT/current.new" "$ROOT/current"
+  sudo -n /usr/bin/systemctl restart lunexgame.service
+fi
+exit 5

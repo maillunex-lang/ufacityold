@@ -1,0 +1,19 @@
+[Unit]
+Description=LunexGame server
+After=network.target
+
+[Service]
+User=lunexgame
+Group=lunexgame
+EnvironmentFile=/opt/lunexgame/etc/lunexgame.env
+ExecStart=/opt/lunexgame/current/lunexgame
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/lunexgame/data /opt/lunexgame/assets
+
+[Install]
+WantedBy=multi-user.target
