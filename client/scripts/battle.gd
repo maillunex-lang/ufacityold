@@ -24,6 +24,8 @@ var playing: bool = false
 var finished: bool = false
 var inconsistencies: int = 0
 var acted_dead: Dictionary = {}
+var final_positions: Dictionary = {}
+var movement_events: int = 0
 
 var timer_label: Label
 var result_label: Label
@@ -191,6 +193,7 @@ func _load_battle() -> void:
 	var b: Dictionary = parsed["battle"]
 	events = b["events"]
 	result = b["result"]
+	final_positions = b.get("positions", {})
 	for d in b["units"]:
 		_spawn_unit(d)
 	status_label.hide()
@@ -218,6 +221,8 @@ func _spawn_unit(d: Dictionary) -> void:
 	var side := str(d["side"])
 	var n := Node3D.new()
 	n.position = _slot_pos(side, int(d["slot"]))
+	if d.has("position"):
+		n.position = _server_pos(d["position"])
 	add_child(n)
 	var body := MeshInstance3D.new()
 	var role := str(d["role"])
@@ -268,6 +273,7 @@ func _spawn_unit(d: Dictionary) -> void:
 	n.add_child(fill)
 	units[id] = {
 		"def": d, "node": n, "mat": mat, "fill": fill, "home": n.position,
+		"pos": n.position, "move": {}, "body": body, "action": null,
 		"hp": int(d["maxHp"]), "max": int(d["maxHp"]), "dead": false, "energy": 0,
 	}
 	if side == "player":
@@ -282,6 +288,7 @@ func _process(delta: float) -> void:
 	while idx < events.size() and float(events[idx]["t"]) <= t_ms:
 		_apply(events[idx])
 		idx += 1
+	_advance_positions(t_ms)
 	if idx >= events.size() and t_ms >= float(result["durationMs"]) + 800.0:
 		_finish()
 
@@ -293,6 +300,8 @@ func _tween() -> Tween:
 
 
 func _apply(e: Dictionary) -> void:
+	# События могут идти по нескольку тиков за кадр: сначала доводим координаты до времени события.
+	_advance_positions(float(e["t"]))
 	var type := str(e["type"])
 	var src := str(e["src"])
 	if not units.has(src):
@@ -301,12 +310,21 @@ func _apply(e: Dictionary) -> void:
 	var s: Dictionary = units[src]
 	if type == "death":
 		s["dead"] = true
+		s["move"] = {}
 		var tw := _tween()
 		tw.tween_property(s["node"], "scale", Vector3(1, 0.1, 1), 0.4)
 		tw.tween_callback(func() -> void: s["node"].visible = false)  # павший уходит с поля вместе с подписью
 		return
 	if s["dead"]:
 		inconsistencies += 1  # мёртвый юнит не может действовать
+	if type == "move":
+		var motion: Dictionary = e["move"]
+		if s["pos"].distance_to(_server_pos(motion["from"])) > 0.002 or not s["def"]["melee"]:
+			inconsistencies += 1
+		s["move"] = {"from": _server_pos(motion["from"]), "to": _server_pos(motion["to"]),
+			"t": int(e["t"]), "duration": int(motion["durationMs"])}
+		movement_events += 1
+		return
 	var targets: Array = e.get("targets", [])
 	var heal := type == "skill" and str(e.get("kind", "")) == "heal"
 	_play_action(s, type, targets, heal)
@@ -316,6 +334,8 @@ func _apply(e: Dictionary) -> void:
 			inconsistencies += 1
 			continue
 		var t: Dictionary = units[tid]
+		if s["def"].has("attackRange") and s["pos"].distance_to(t["pos"]) > float(s["def"]["attackRange"]) / 1000.0 + 0.002:
+			inconsistencies += 1
 		var is_heal := heal or (type == "skill" and tid == src)  # лечение себя в навыке танка
 		var hp := int(h["hp"])
 		if hp < 0 or hp > int(t["max"]):
@@ -339,12 +359,29 @@ func heal_target_is_ally(s: Dictionary, t: Dictionary) -> bool:
 	return str(s["def"]["side"]) == str(t["def"]["side"])
 
 
+func _server_pos(p: Dictionary) -> Vector3:
+	return Vector3(float(p["x"]) / 1000.0, 0.0, float(p["z"]) / 1000.0)
+
+
+func _advance_positions(at_ms: float) -> void:
+	for id in units:
+		var u: Dictionary = units[id]
+		var motion: Dictionary = u["move"]
+		if motion.is_empty():
+			continue
+		var weight := clampf((at_ms - float(motion["t"])) / float(motion["duration"]), 0.0, 1.0)
+		u["pos"] = (motion["from"] as Vector3).lerp(motion["to"], weight)
+		u["node"].position = u["pos"]
+		if weight >= 1.0:
+			u["move"] = {}
+
+
 func _play_action(s: Dictionary, type: String, targets: Array, _heal: bool) -> void:
 	var n: Node3D = s["node"]
 	var d: Dictionary = s["def"]
 	var dst := Vector3.ZERO
 	if targets.size() > 0 and units.has(str(targets[0]["unit"])) and str(targets[0]["unit"]) != str(d["id"]):
-		dst = units[str(targets[0]["unit"])]["home"]
+		dst = units[str(targets[0]["unit"])]["pos"]
 	if type == "skill":
 		var tw := _tween()
 		tw.tween_property(s["mat"], "emission", Color(0.9, 0.8, 0.2), 0.15)
@@ -355,10 +392,16 @@ func _play_action(s: Dictionary, type: String, targets: Array, _heal: bool) -> v
 	if dst == Vector3.ZERO:
 		return
 	if d["melee"]:
-		var dir: Vector3 = (dst - s["home"]).normalized()
+		# Короткий выпад меша; корень героя движется только по записи сервера.
+		var dir: Vector3 = (dst - s["pos"]).normalized()
+		var body: MeshInstance3D = s["body"]
+		var rest := Vector3(0, 0.85, 0)
+		if s["action"] != null:
+			(s["action"] as Tween).kill()
 		var tw3 := _tween()
-		tw3.tween_property(n, "position", dst - dir * 1.1, 0.18)
-		tw3.tween_property(n, "position", s["home"], 0.25)
+		s["action"] = tw3
+		tw3.tween_property(body, "position", rest + dir * 0.12, 0.1)
+		tw3.tween_property(body, "position", rest, 0.15)
 	else:
 		var ball := MeshInstance3D.new()
 		var sm := SphereMesh.new()
@@ -370,7 +413,7 @@ func _play_action(s: Dictionary, type: String, targets: Array, _heal: bool) -> v
 		bm.emission_enabled = true
 		bm.emission = bm.albedo_color
 		ball.material_override = bm
-		ball.position = s["home"] + Vector3(0, 1.2, 0)
+		ball.position = s["pos"] + Vector3(0, 1.2, 0)
 		add_child(ball)
 		var tw4 := _tween()
 		tw4.tween_property(ball, "position", dst + Vector3(0, 1.2, 0), 0.25)
@@ -410,7 +453,12 @@ func _finish() -> void:
 	var player_alive := 0
 	var enemy_alive := 0
 	for id in units:
+		if final_positions.has(id) and units[id]["pos"].distance_to(_server_pos(final_positions[id])) > 0.002:
+			inconsistencies += 1
 		if not units[id]["dead"]:
+			# Возврат после завершения боя — только победная стойка, на результат не влияет.
+			var return_tween := _tween()
+			return_tween.tween_property(units[id]["node"], "position", units[id]["home"], 0.7)
 			if str(units[id]["def"]["side"]) == "player":
 				player_alive += 1
 			else:
@@ -425,6 +473,8 @@ func _finish() -> void:
 	result_label.text = "ПОБЕДА" if winner == "player" else "ПОРАЖЕНИЕ"
 	result_label.show()
 	again_button.show()
+	if not final_positions.is_empty():
+		print("BATTLE_MOVEMENT_OK moves=%d inconsistencies=%d" % [movement_events, inconsistencies])
 	print("BATTLE_OK winner=%s reason=%s durationMs=%d events=%d inconsistencies=%d" % [
 		winner, str(result["reason"]), int(result["durationMs"]), events.size(), inconsistencies])
 	if smoke:

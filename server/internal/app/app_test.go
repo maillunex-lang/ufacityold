@@ -1,11 +1,13 @@
 package app
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"lunexgame/internal/store"
@@ -147,6 +149,52 @@ func TestBattleAPI(t *testing.T) {
 	}
 	if call("GET", "/LunexGame/api/battle/nope", tok1).Code != 404 {
 		t.Fatal("несуществующий бой")
+	}
+	// Повторное чтение не пересчитывает бой и не создаёт записей/побочных эффектов.
+	for range 5 {
+		g := call("GET", "/LunexGame/api/battle/"+resp.BattleID, tok1)
+		if g.Code != 200 || !bytes.Equal(g.Body.Bytes(), w.Body.Bytes()) {
+			t.Fatal("повторное чтение изменило результат")
+		}
+	}
+	var count int
+	if err := st.DB.QueryRow("SELECT count(*) FROM battles").Scan(&count); err != nil || count != 1 {
+		t.Fatal("повторное чтение создало бой", count, err)
+	}
+	// В прототипе повтор POST означает новую бесплатную попытку, не повторную выдачу награды.
+	second := call("POST", "/LunexGame/api/battle/start", tok1)
+	var next struct {
+		BattleID string          `json:"battleId"`
+		Battle   json.RawMessage `json:"battle"`
+	}
+	var first struct {
+		Battle json.RawMessage `json:"battle"`
+	}
+	if err := json.Unmarshal(second.Body.Bytes(), &next); err != nil || second.Code != 200 || next.BattleID == resp.BattleID {
+		t.Fatal("повторный старт", err, second.Code)
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &first); err != nil || !bytes.Equal(next.Battle, first.Battle) {
+		t.Fatal("одинаковые отряды дали разные записи", err)
+	}
+	if err := st.DB.QueryRow("SELECT count(*) FROM battles").Scan(&count); err != nil || count != 2 {
+		t.Fatal("число попыток", count, err)
+	}
+	// Результат/награду нельзя прислать с клиента. Начислений в этой части ещё нет;
+	// защиту от двойного начисления проверяем только после появления экономики/транзакции награды.
+	for range 2 {
+		for _, action := range []string{"finish", "claim"} {
+			r := httptest.NewRequest("POST", "/LunexGame/api/battle/"+resp.BattleID+"/"+action,
+				strings.NewReader(`{"winner":"player","gold":1000000}`))
+			r.Header.Set("Authorization", "Bearer "+tok1)
+			g := httptest.NewRecorder()
+			h.ServeHTTP(g, r)
+			if g.Code != 404 {
+				t.Fatal("принят клиентский результат/запрос награды", g.Code)
+			}
+		}
+	}
+	if g := call("GET", "/LunexGame/api/battle/"+resp.BattleID, tok1); !bytes.Equal(g.Body.Bytes(), w.Body.Bytes()) {
+		t.Fatal("попытка подделки изменила сохранённый бой")
 	}
 }
 
