@@ -31,6 +31,7 @@ type Config struct {
 	Store     *store.Store
 	DBPath    string
 	BackupDir string
+	WebDir    string // каталог Web-сборки клиента (PWA); пусто — не раздаётся
 	AssetsDir string // каталог загружаемых ресурсов (вне релизов, не перезаписывается деплоем)
 }
 
@@ -133,6 +134,13 @@ func New(b Build, cfg Config) http.Handler {
 	as := assets.New(cfg.AssetsDir)
 	mux.HandleFunc("GET "+Prefix+"/api/assets/manifest", as.ManifestHandler)
 	mux.Handle("GET "+Prefix+"/assets/", as.FileHandler(Prefix+"/assets/"))
+	if cfg.WebDir != "" {
+		// Web-клиент (PWA) под /LunexGame/play/. Service worker с этого пути имеет область только /LunexGame/play/.
+		mux.Handle("GET "+Prefix+"/play/", http.StripPrefix(Prefix+"/play/", webHandler(cfg.WebDir)))
+		mux.HandleFunc("GET "+Prefix+"/play", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, Prefix+"/play/", http.StatusMovedPermanently)
+		})
+	}
 	// Админка не реализована: маршрут закрыт явно.
 	mux.HandleFunc(Prefix+"/admin/", func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
@@ -215,6 +223,7 @@ func FromEnv() (addr string, cfg Config) {
 		addr = "127.0.0.1:18741"
 	}
 	cfg.AssetsDir = os.Getenv("LUNEXGAME_ASSETS_DIR")
+	cfg.WebDir = os.Getenv("LUNEXGAME_WEB_DIR")
 	cfg.DBPath = os.Getenv("LUNEXGAME_DB")
 	if cfg.DBPath == "" {
 		cfg.DBPath = "./data/lunexgame.db"
@@ -224,4 +233,30 @@ func FromEnv() (addr string, cfg Config) {
 	}
 	cfg.BackupDir = filepath.Join(filepath.Dir(cfg.DBPath), "backups")
 	return
+}
+
+// webHandler раздаёт статические файлы Web-сборки; index.html и service worker не кэшируются.
+func webHandler(dir string) http.Handler {
+	fs := http.FileServer(http.Dir(dir))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// FileServer перенаправляет /index.html на ./ — такой «redirected»-ответ service worker не может
+		// отдать для навигации (ERR_FAILED без сети), поэтому index.html отдаём напрямую.
+		if r.URL.Path == "index.html" || r.URL.Path == "/index.html" {
+			f, err := os.Open(filepath.Join(dir, "index.html"))
+			if err != nil {
+				http.NotFound(w, r)
+				return
+			}
+			defer f.Close()
+			st, _ := f.Stat()
+			w.Header().Set("Cache-Control", "no-cache")
+			http.ServeContent(w, r, "index.html", st.ModTime(), f)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/") || r.URL.Path == "" || strings.HasSuffix(r.URL.Path, ".html") ||
+			strings.HasSuffix(r.URL.Path, ".service.worker.js") || strings.HasSuffix(r.URL.Path, ".manifest.json") {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
+		fs.ServeHTTP(w, r)
+	})
 }

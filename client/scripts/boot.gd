@@ -18,6 +18,9 @@ func _ready() -> void:
 	var override := OS.get_environment("LUNEXGAME_BASE_URL")
 	if override != "":
 		base_url = override
+	elif OS.has_feature("web"):
+		# В браузере API — на том же источнике, что и страница (учитывает префикс /LunexGame).
+		base_url = str(JavaScriptBridge.eval("window.location.origin")) + "/LunexGame"
 	smoke = OS.get_environment("LUNEXGAME_SMOKE") == "1"
 	_build_ui()
 	_run()

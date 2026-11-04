@@ -149,3 +149,24 @@ func TestBattleAPI(t *testing.T) {
 		t.Fatal("несуществующий бой")
 	}
 }
+
+func TestWebIndexNoRedirect(t *testing.T) {
+	d := t.TempDir()
+	_ = os.WriteFile(filepath.Join(d, "index.html"), []byte("<html>ok</html>"), 0o644)
+	_ = os.WriteFile(filepath.Join(d, "index.wasm"), []byte("\x00asm"), 0o644)
+	h := New(Build{}, Config{WebDir: d})
+	for p, want := range map[string]int{
+		"/LunexGame/play/":           200,
+		"/LunexGame/play/index.html": 200, // без перенаправления (иначе service worker ломается)
+		"/LunexGame/play/index.wasm": 200,
+		"/LunexGame/play/nope":       404,
+		"/LunexGame/play/../x":       307, // ServeMux нормализует путь; выхода за каталог нет
+	} {
+		if got := get(h, p).Code; got != want {
+			t.Errorf("%s: %d, ожидалось %d", p, got, want)
+		}
+	}
+	if ct := get(h, "/LunexGame/play/index.wasm").Header().Get("Content-Type"); ct != "application/wasm" {
+		t.Errorf("тип wasm: %q", ct)
+	}
+}

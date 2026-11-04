@@ -85,6 +85,21 @@ jobs:
           grep -q "android.permission.INTERNET" build/badging.txt
           grep -q "arm64-v8a" build/badging.txt
 
+      - name: Экспорт Web (PWA) и контроль размера
+        run: |
+          mkdir -p build/web
+          "$GODOT" --headless --path client --export-release "Web" "$GITHUB_WORKSPACE/build/web/index.html"
+          wasm=$(stat -c %s build/web/index.wasm); gz=$(gzip -9 -c build/web/index.wasm | wc -c)
+          echo "Web: index.wasm $wasm байт, gzip $gz байт; pck $(stat -c %s build/web/index.pck) байт"
+          [ "$wasm" -le 52428800 ] || { echo "index.wasm больше 50 МиБ"; exit 1; }
+          test -f build/web/index.manifest.json && test -f build/web/index.service.worker.js
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lunexgame-web-${{ github.sha }}
+          path: build/web/
+          retention-days: 14
+
       - uses: actions/upload-artifact@v4
         with:
           name: lunexgame-debug-apk-${{ github.sha }}
