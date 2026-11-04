@@ -16,13 +16,7 @@ var (
 	buildTime = "unknown"
 )
 
-// rollbackTest — ВРЕМЕННО, для проверки отката деплоя; будет откачено git revert.
-const rollbackTest = true
-
 func main() {
-	if rollbackTest {
-		log.Fatal("ROLLBACK-TEST: намеренный сбой запуска")
-	}
 	addr, cfg := app.FromEnv()
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
