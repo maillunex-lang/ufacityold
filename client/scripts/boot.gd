@@ -33,6 +33,11 @@ func _build_ui() -> void:
 	add_child(bg)
 	var box := VBoxContainer.new()
 	box.set_anchors_preset(Control.PRESET_FULL_RECT)
+	var ins := SafeArea.insets(get_viewport())  # вырез камеры и системные зоны
+	box.offset_left = 20.0 + float(ins["left"])
+	box.offset_right = -20.0 - float(ins["right"])
+	box.offset_top = 20.0 + float(ins["top"])
+	box.offset_bottom = -20.0 - float(ins["bottom"])
 	box.alignment = BoxContainer.ALIGNMENT_CENTER
 	box.add_theme_constant_override("separation", 32)
 	add_child(box)

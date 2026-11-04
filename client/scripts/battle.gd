@@ -31,6 +31,7 @@ var status_label: Label
 var again_button: Button
 var portraits: Dictionary = {}  # id -> {bar, tint}
 var portrait_box: HBoxContainer
+var hud: MarginContainer
 
 
 func _ready() -> void:
@@ -77,45 +78,61 @@ func _build_world() -> void:
 func _build_ui() -> void:
 	var layer := CanvasLayer.new()
 	add_child(layer)
-	var root := Control.new()
-	root.set_anchors_preset(Control.PRESET_FULL_RECT)
-	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	layer.add_child(root)
+	# Всё HUD — в контейнере с отступами безопасной зоны (вырез камеры) и общими полями.
+	hud = MarginContainer.new()
+	hud.set_anchors_preset(Control.PRESET_FULL_RECT)
+	hud.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	layer.add_child(hud)
+	var col := VBoxContainer.new()
+	col.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	hud.add_child(col)
+	var top := VBoxContainer.new()
+	top.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	col.add_child(top)
 	timer_label = _ui_label("0:00 / 1:30", 48, Color("e8d9a0"))
-	timer_label.set_anchors_preset(Control.PRESET_CENTER_TOP)
-	timer_label.position = Vector2(-150, 40)
-	root.add_child(timer_label)
-	var warn := _ui_label("ВРЕМЕННЫЕ МОДЕЛИ И БАЛАНС (прототип)", 28, Color("3fe0c5"))
-	warn.set_anchors_preset(Control.PRESET_CENTER_TOP)
-	warn.position = Vector2(-300, 110)
-	root.add_child(warn)
+	top.add_child(timer_label)
+	top.add_child(_ui_label("ВРЕМЕННЫЕ МОДЕЛИ И БАЛАНС (прототип)", 28, Color("3fe0c5")))
+	var gap := Control.new()
+	gap.custom_minimum_size = Vector2(0, 60)
+	top.add_child(gap)
+	# Статусы и итог — в пустой области под таймером, над полем боя.
+	var msg := VBoxContainer.new()
+	msg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	msg.add_theme_constant_override("separation", 24)
+	top.add_child(msg)
 	status_label = _ui_label("Загрузка боя…", 40, Color("e8d9a0"))
-	status_label.set_anchors_preset(Control.PRESET_CENTER)
-	status_label.position = Vector2(-250, -40)
-	root.add_child(status_label)
+	msg.add_child(status_label)
 	result_label = _ui_label("", 96, Color("d4af37"))
-	result_label.set_anchors_preset(Control.PRESET_CENTER)
-	result_label.position = Vector2(-300, -520)
 	result_label.hide()
-	root.add_child(result_label)
+	msg.add_child(result_label)
 	again_button = Button.new()
 	again_button.text = "Ещё бой"
 	again_button.custom_minimum_size = Vector2(420, 120)
 	again_button.add_theme_font_size_override("font_size", 48)
-	again_button.set_anchors_preset(Control.PRESET_CENTER)
-	again_button.position = Vector2(-210, 140)
+	again_button.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	again_button.pressed.connect(func() -> void: get_tree().reload_current_scene())
 	again_button.hide()
-	root.add_child(again_button)
+	msg.add_child(again_button)
+	var spacer := Control.new()
+	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	col.add_child(spacer)
+	# Портреты внизу.
 	var bar := HBoxContainer.new()
-	bar.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
-	bar.offset_top = -330
-	bar.offset_bottom = -40
-	bar.offset_left = 20
-	bar.offset_right = -20
+	bar.custom_minimum_size = Vector2(0, 290)
 	bar.add_theme_constant_override("separation", 12)
-	root.add_child(bar)
+	col.add_child(bar)
 	portrait_box = bar
+	_apply_safe_area()
+	get_viewport().size_changed.connect(_apply_safe_area)
+
+
+func _apply_safe_area() -> void:
+	var ins := SafeArea.insets(get_viewport())
+	hud.add_theme_constant_override("margin_left", int(ins["left"]) + 20)
+	hud.add_theme_constant_override("margin_right", int(ins["right"]) + 20)
+	hud.add_theme_constant_override("margin_top", int(ins["top"]) + 30)
+	hud.add_theme_constant_override("margin_bottom", int(ins["bottom"]) + 40)
 
 
 func _ui_label(text: String, size: int, color: Color) -> Label:
@@ -124,7 +141,8 @@ func _ui_label(text: String, size: int, color: Color) -> Label:
 	l.add_theme_font_size_override("font_size", size)
 	l.add_theme_color_override("font_color", color)
 	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	l.custom_minimum_size = Vector2(300, 0)
+	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	return l
 
 
@@ -136,7 +154,6 @@ func _make_portrait(def: Dictionary) -> void:
 	tint.custom_minimum_size = Vector2(0, 150)
 	box.add_child(tint)
 	var name_l := _ui_label(str(def["name"]), 26, Color.WHITE)
-	name_l.custom_minimum_size = Vector2(0, 0)
 	box.add_child(name_l)
 	var en := ProgressBar.new()
 	en.max_value = 100
