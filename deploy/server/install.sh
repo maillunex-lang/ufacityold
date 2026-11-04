@@ -15,6 +15,9 @@ install -d -o lunexgame-deploy -g lunexgame -m 0750 /opt/lunexgame /opt/lunexgam
 install -d -o root -g root -m 0755 /opt/lunexgame/bin /opt/lunexgame/etc
 install -d -o lunexgame -g lunexgame -m 0750 /opt/lunexgame/data /opt/lunexgame/assets /opt/lunexgame/backups
 install -m 0755 -o root -g root "$HERE/lunexgame-deploy" /opt/lunexgame/bin/lunexgame-deploy
+# authorized_keys принадлежит root: пользователь доставки не может изменить forced command
+install -d -o root -g root -m 0755 /opt/lunexgame/.ssh
+touch /opt/lunexgame/.ssh/authorized_keys; chown root:root /opt/lunexgame/.ssh/authorized_keys; chmod 0644 /opt/lunexgame/.ssh/authorized_keys
 echo "$PORT" >/opt/lunexgame/etc/port
 [[ -e /opt/lunexgame/etc/lunexgame.env ]] || printf 'LUNEXGAME_LISTEN=127.0.0.1:%s\nLUNEXGAME_ASSETS_DIR=/opt/lunexgame/assets\n' "$PORT" >/opt/lunexgame/etc/lunexgame.env
 chmod 0640 /opt/lunexgame/etc/lunexgame.env; chown root:lunexgame /opt/lunexgame/etc/lunexgame.env
@@ -25,9 +28,8 @@ systemctl daemon-reload; systemctl enable lunexgame.service
 sed "s/__PORT__/$PORT/" "$HERE/lunexgame.nginx.conf" >/etc/nginx/snippets/lunexgame.conf
 cat <<MSG
 Готово. Дальше вручную:
- 1) в http{} nginx (если нет): map \$http_upgrade \$connection_upgrade_lunexgame { default upgrade; '' close; }
- 2) в server{} tts-ufa.ru добавить:  include /etc/nginx/snippets/lunexgame.conf;   (сначала бэкап конфигурации сайта)
- 3) nginx -t && systemctl reload nginx
- 4) в ~lunexgame-deploy/.ssh/authorized_keys:
+ 1) бэкап и добавление строки в server{} (443) tts-ufa.ru:  include /etc/nginx/snippets/lunexgame.conf;
+ 2) nginx -t && systemctl reload nginx
+ 3) добавить в /opt/lunexgame/.ssh/authorized_keys (владелец root):
     command="/opt/lunexgame/bin/lunexgame-deploy",restrict ssh-ed25519 <ПУБЛИЧНЫЙ ключ доставки> lunexgame-deploy
 MSG
