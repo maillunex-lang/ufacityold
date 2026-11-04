@@ -3,7 +3,7 @@ name: ci-deploy
 on:
   push:
     branches: [main]
-    paths-ignore: ['client/**', 'docs/**', '**.md', '.github/workflows/client-android.yml', '.github/actions/**', 'tools/**']   # клиент/документы сервер не передеплоивают
+    paths-ignore: ['client/**', 'docs/**', '**.md', '.github/workflows/client-android.yml', '.github/actions/**', 'tools/**', 'deploy/**']   # клиент/документы сервер не передеплоивают
     # (ветка: фактическая основная ветка выбирается владельцем; см. docs/DEPLOYMENT.md
   pull_request:             # PR только проверяются; секреты PR не передаются
 
