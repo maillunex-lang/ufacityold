@@ -13,6 +13,9 @@ read -r CMD SHA SUM EXTRA <<<"${SSH_ORIGINAL_COMMAND:-}"
 exec 9>"$ROOT/deploy.lock"
 flock -n 9 || { echo "другой деплой выполняется" >&2; exit 3; }
 
+# Недозагруженные файлы от оборванных передач (старше 30 мин) удаляем.
+find "$ROOT/releases" -maxdepth 1 -name '.incoming.*' -mmin +30 -delete 2>/dev/null || true
+
 REL=$ROOT/releases/$SHA
 TMP=$(mktemp "$ROOT/releases/.incoming.XXXXXX")
 trap 'rm -f "$TMP"' EXIT
@@ -31,7 +34,7 @@ health() { # ждём до 30 с, коммит должен совпасть
     sleep 1
   done; return 1
 }
-sudo -n /usr/bin/systemctl restart lunexgame.service
+timeout 90 sudo -n /usr/bin/systemctl restart lunexgame.service
 if health; then
   echo "OK $SHA"
   # хранить 5 последних релизов, текущий и предыдущий не трогать
@@ -42,6 +45,6 @@ fi
 echo "health не прошёл — откат на ${PREV:-<нет>}" >&2
 if [[ -n "$PREV" ]]; then
   ln -sfn "$PREV" "$ROOT/current.new"; mv -Tf "$ROOT/current.new" "$ROOT/current"
-  sudo -n /usr/bin/systemctl restart lunexgame.service
+  timeout 90 sudo -n /usr/bin/systemctl restart lunexgame.service
 fi
 exit 5

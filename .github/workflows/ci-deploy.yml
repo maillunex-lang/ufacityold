@@ -50,6 +50,7 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-24.04
     environment: production
+    timeout-minutes: 20            # доставка не должна висеть часами (медленная сеть/обрыв)
     concurrency:
       group: lunexgame-deploy
       cancel-in-progress: false
@@ -75,8 +76,25 @@ jobs:
           PUBLIC_URL: ${{ vars.PUBLIC_BASE_URL || 'https://tts-ufa.ru/LunexGame' }}
         run: |
           SUM=$(cat build/lunexgame.sha256)
-          ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes \
-            "$USER_@$HOST" "deploy $GITHUB_SHA $SUM" < build/lunexgame
+          ls -l build/lunexgame | awk '{print "размер бинарника: " $5 " байт"}'
+          # Передача: сжатие ssh, таймаут подключения, «пульс» соединения и общий лимит времени.
+          # При таймауте/обрыве (коды 124/255) — одна повторная попытка с новым соединением.
+          # Остальные коды (в т.ч. 5 = откат сервером после провала health) не повторяются.
+          for attempt in 1 2; do
+            start=$(date +%s)
+            set +e
+            timeout 300 ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes \
+              -o Compression=yes -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=6 \
+              "$USER_@$HOST" "deploy $GITHUB_SHA $SUM" < build/lunexgame
+            rc=$?
+            set -e
+            echo "попытка $attempt: код $rc, $(( $(date +%s) - start )) с"
+            [ "$rc" -eq 0 ] && break
+            if { [ "$rc" -eq 124 ] || [ "$rc" -eq 255 ]; } && [ "$attempt" -lt 2 ]; then
+              echo "таймаут/обрыв соединения — повтор" >&2; continue
+            fi
+            echo "доставка не удалась, код $rc" >&2; exit "$rc"
+          done
           for i in $(seq 10); do
             v=$(curl -fsS "$PUBLIC_URL/api/version" || true)
             echo "$v" | grep -q "\"commit\":\"$GITHUB_SHA\"" && curl -fsS "$PUBLIC_URL/api/health" && exit 0
