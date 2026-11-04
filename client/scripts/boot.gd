@@ -40,7 +40,7 @@ func _build_ui() -> void:
 	retry_button.text = "Повторить"
 	retry_button.custom_minimum_size = Vector2(400, 120)
 	retry_button.add_theme_font_size_override("font_size", 44)
-	retry_button.size_flags_horizontal = Control.SIZE_SHAPE_CENTER
+	retry_button.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	retry_button.pressed.connect(_run)
 	retry_button.hide()
 	box.add_child(retry_button)
