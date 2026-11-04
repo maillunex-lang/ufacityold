@@ -22,6 +22,8 @@ jobs:
       - name: gofmt
         working-directory: server
         run: test -z "$(gofmt -l .)"
+      - name: Проверка доставки без сети и секретов
+        run: python3 -m unittest discover -s tools/tests -p 'test_deploy_server.py' -v
       - name: vet
         working-directory: server
         run: go vet ./...
@@ -49,6 +51,7 @@ jobs:
     needs: test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-24.04
+    timeout-minutes: 12
     environment: production
     concurrency:
       group: lunexgame-deploy
@@ -56,6 +59,7 @@ jobs:
     permissions:
       contents: read
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: lunexgame-${{ github.sha }}
@@ -69,20 +73,12 @@ jobs:
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_deploy && chmod 600 ~/.ssh/id_deploy
       - name: Доставка и проверка (откат выполняет сервер)
+        timeout-minutes: 10
         env:
           HOST: ${{ secrets.DEPLOY_HOST }}
           USER_: ${{ secrets.DEPLOY_USER }}
           PUBLIC_URL: ${{ vars.PUBLIC_BASE_URL || 'https://tts-ufa.ru/LunexGame' }}
-        run: |
-          SUM=$(cat build/lunexgame.sha256)
-          ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes \
-            "$USER_@$HOST" "deploy $GITHUB_SHA $SUM" < build/lunexgame
-          for i in $(seq 10); do
-            v=$(curl -fsS "$PUBLIC_URL/api/version" || true)
-            echo "$v" | grep -q "\"commit\":\"$GITHUB_SHA\"" && curl -fsS "$PUBLIC_URL/api/health" && exit 0
-            sleep 3
-          done
-          echo "публичная проверка version/health не прошла" >&2; exit 1
+        run: bash .github/scripts/deploy-server.sh
       - name: Очистка ключей
         if: always()
         run: rm -f ~/.ssh/id_deploy
