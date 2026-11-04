@@ -9,6 +9,8 @@ var smoke: bool = false
 var status_label: Label
 var info_label: Label
 var retry_button: Button
+var progress_bar: ProgressBar
+var loader: AssetLoader
 
 
 func _ready() -> void:
@@ -36,6 +38,12 @@ func _build_ui() -> void:
 	box.add_child(status_label)
 	info_label = _label("", 32, Color("3fe0c5"))
 	box.add_child(info_label)
+	progress_bar = ProgressBar.new()
+	progress_bar.custom_minimum_size = Vector2(700, 36)
+	progress_bar.show_percentage = false
+	progress_bar.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	progress_bar.hide()
+	box.add_child(progress_bar)
 	retry_button = Button.new()
 	retry_button.text = "Повторить"
 	retry_button.custom_minimum_size = Vector2(400, 120)
@@ -85,8 +93,59 @@ func _run() -> void:
 	var account_id := int(me["accountId"])
 	status_label.text = "Вы вошли как гость #%d" % account_id
 	print("BOOT_OK account=", account_id)
+
+	if not await _sync_assets():
+		return
 	if smoke:
 		get_tree().quit(0)
+
+
+## Стартовый набор блокирует вход, остальное докачивается в фоне (пока без игрового экрана).
+func _sync_assets() -> bool:
+	if loader != null:
+		loader.queue_free()
+	loader = AssetLoader.new()
+	loader.base_url = base_url
+	loader.test_abort_after_bytes = int(OS.get_environment("LUNEXGAME_TEST_ABORT_AFTER_BYTES")) if OS.get_environment("LUNEXGAME_TEST_ABORT_AFTER_BYTES") != "" else 0
+	loader.verify_full = OS.get_environment("LUNEXGAME_VERIFY_FULL") == "1"
+	add_child(loader)
+	loader.progress.connect(_on_progress)
+	var manifest: Dictionary = await loader.fetch_manifest()
+	if manifest.is_empty():
+		_fail("Не удалось получить список ресурсов (%s)" % loader.last_error)
+		return false
+	progress_bar.show()
+	status_label.text = "Загрузка стартовых ресурсов…"
+	if not await loader.sync_group(manifest, "start"):
+		_fail("Ошибка загрузки ресурсов: " + loader.last_error)
+		return false
+	print("ASSETS_START_OK ", loader.summary())
+	status_label.text = "Фоновая загрузка ресурсов…"
+	for g in _other_groups(manifest):
+		if not await loader.sync_group(manifest, g):
+			_fail("Ошибка загрузки ресурсов: " + loader.last_error)
+			return false
+	loader.prune(manifest)
+	progress_bar.hide()
+	status_label.text = "Ресурсы загружены"
+	print("ASSETS_OK ", loader.summary())
+	return true
+
+
+func _other_groups(manifest: Dictionary) -> Array:
+	var gs: Array = []
+	for f in manifest["files"]:
+		var g := str(f["group"])
+		if g != "start" and not gs.has(g):
+			gs.append(g)
+	gs.sort()
+	return gs
+
+
+func _on_progress(done: int, total: int) -> void:
+	progress_bar.max_value = max(total, 1)
+	progress_bar.value = done
+	info_label.text = "%.1f / %.1f МБ" % [done / 1048576.0, total / 1048576.0]
 
 
 func _fail(msg: String) -> void:

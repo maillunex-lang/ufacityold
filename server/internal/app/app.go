@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"lunexgame/internal/assets"
 	"lunexgame/internal/store"
 )
 
@@ -80,10 +81,9 @@ func New(b Build, cfg Config) http.Handler {
 		})
 	}
 	// Раздача ресурсов (основа для загрузчика клиента). Каталог пуст, пока нет контента.
-	if cfg.AssetsDir != "" {
-		fs := http.StripPrefix(Prefix+"/assets/", http.FileServer(http.Dir(cfg.AssetsDir)))
-		mux.Handle("GET "+Prefix+"/assets/", noListing(fs))
-	}
+	as := assets.New(cfg.AssetsDir)
+	mux.HandleFunc("GET "+Prefix+"/api/assets/manifest", as.ManifestHandler)
+	mux.Handle("GET "+Prefix+"/assets/", as.FileHandler(Prefix+"/assets/"))
 	// Админка не реализована: маршрут закрыт явно.
 	mux.HandleFunc(Prefix+"/admin/", func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
@@ -100,17 +100,6 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(v)
-}
-
-// noListing запрещает листинг каталогов и скрытые файлы.
-func noListing(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/") || strings.HasPrefix(filepath.Base(r.URL.Path), ".") {
-			http.NotFound(w, r)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
 }
 
 func statusPage(b Build) string {
