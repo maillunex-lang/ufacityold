@@ -12,8 +12,8 @@ permissions:
   contents: read
 
 env:
-  GODOT_VERSION: 4.5-stable        # закреплено; смена версии — отдельное решение
-  GODOT_TEMPLATES_DIR: 4.5.stable
+  GODOT_VERSION: 4.7-stable        # закреплено; смена версии — отдельное решение
+  GODOT_TEMPLATES_DIR: 4.7.stable
   APK_MAX_BYTES: 94371840          # 90 МиБ, лимит из ТЗ
 
 jobs:
@@ -50,7 +50,7 @@ jobs:
             -storepass android -keypass android -keyalg RSA -keysize 2048 -validity 10000 \
             -dname "CN=LunexGame CI debug,O=LunexGame,C=RU"
           mkdir -p ~/.config/godot
-          cat > ~/.config/godot/editor_settings-4.5.tres <<TRES
+          cat > ~/.config/godot/editor_settings-4.7.tres <<TRES
           [gd_resource type="EditorSettings" format=3]
 
           [resource]
@@ -60,7 +60,7 @@ jobs:
           export/android/debug_keystore_user = "androiddebugkey"
           export/android/debug_keystore_pass = "android"
           TRES
-          sed -i 's/^          //' ~/.config/godot/editor_settings-4.5.tres
+          sed -i 's/^          //' ~/.config/godot/editor_settings-4.7.tres
           echo "SDK=$SDK" >> "$GITHUB_ENV"
 
       - name: Импорт ресурсов проекта
