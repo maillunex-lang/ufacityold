@@ -5,3 +5,4 @@ static var token: String = ""
 static var account_id: int = 0
 static var campaign_stage: int = 0
 static var tower_floor: int = 0
+static var force_new_battle: bool = false

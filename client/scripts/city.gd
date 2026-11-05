@@ -68,6 +68,7 @@ func _campaign()->void:
 
 func _fight_stage(stage:int)->void:
 	Session.campaign_stage = stage
+	Session.force_new_battle = true
 	get_tree().change_scene_to_file("res://scenes/battle.tscn")
 
 func _clear_campaign_rows()->void:
@@ -88,6 +89,7 @@ func _tower()->void:
 
 func _fight_tower(floor:int)->void:
 	Session.tower_floor = floor
+	Session.force_new_battle = true
 	get_tree().change_scene_to_file("res://scenes/battle.tscn")
 
 func _clear_tower_rows()->void:

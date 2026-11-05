@@ -67,12 +67,15 @@ var float_volley_n: int = 0
 var float_volley_spread: float = 0.0
 var campaign_stage: int = 0
 var tower_floor: int = 0
+var force_new_battle: bool = false
 
 
 func _ready() -> void:
 	smoke = OS.get_environment("LUNEXGAME_SMOKE") == "1"
 	campaign_stage = Session.campaign_stage
 	tower_floor = Session.tower_floor
+	force_new_battle = Session.force_new_battle
+	Session.force_new_battle = false
 	if smoke:
 		speed = SMOKE_SPEED
 	if OS.get_environment("LUNEXGAME_BATTLE_SPEED") != "":
@@ -325,6 +328,10 @@ func _on_live(msg: Dictionary) -> void:
 
 func _on_state(msg: Dictionary) -> void:
 	var st: Dictionary = msg.get("state", {})
+	if force_new_battle and st.get("result") is Dictionary and live_ws != null and live_ws.get_ready_state() == WebSocketPeer.STATE_OPEN and not start_sent:
+		start_sent = true
+		live_ws.send_text(JSON.stringify({"type": "start"}))
+		return
 	server_t = int(st.get("t", 0))
 	var resumed := bool(msg.get("resumed", false))
 	var new_id := str(msg.get("battleId", ""))
