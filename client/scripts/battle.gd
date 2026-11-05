@@ -226,14 +226,33 @@ func _load_battle() -> void:
 func _apply_playback(payload: Dictionary) -> void:
 	var server_speed := int(payload.get("speed", 1))
 	selected_speed = server_speed
-	allowed_speeds = payload.get("allowedSpeeds", [1])
+	# Godot разбирает JSON-числа как float: [1.0].has(1) == false, из-за этого x1 выглядела выключенной.
+	allowed_speeds = _json_ints(payload.get("allowedSpeeds", [1]), [1])
 	for value in [1, 2, 4]:
 		var button: Button = speed_buttons.get(value)
 		if button:
-			button.disabled = not allowed_speeds.has(value)
-			_style_speed_button(button, value, allowed_speeds.has(value), value == selected_speed)
+			var allowed := allowed_speeds.has(value)
+			button.disabled = not allowed
+			_style_speed_button(button, value, allowed, value == selected_speed)
 	if not smoke and OS.get_environment("LUNEXGAME_BATTLE_SPEED") == "":
 		speed = float(server_speed)
+	_log_speed_ui()
+
+func _json_ints(raw: Variant, fallback: Array) -> Array:
+	var out: Array = []
+	if raw is Array:
+		for item in raw:
+			out.append(int(item))
+	if out.is_empty():
+		return fallback.duplicate()
+	return out
+
+func _log_speed_ui() -> void:
+	# JSON-числа в Godot — float: до приведения [1.0].has(1) ложно, и x1 остаётся выключенной.
+	var x1: Button = speed_buttons.get(1)
+	var enabled := x1 != null and not x1.disabled
+	var selected := enabled and selected_speed == 1
+	print("BATTLE_SPEED_UI x1_enabled=%s x1_selected=%s" % [str(enabled).to_lower(), str(selected).to_lower()])
 
 func _style_speed_button(button: Button, value: int, allowed: bool, selected: bool) -> void:
 	var bg := StyleBoxFlat.new()
@@ -243,6 +262,10 @@ func _style_speed_button(button: Button, value: int, allowed: bool, selected: bo
 	bg.corner_radius_top_left = 12; bg.corner_radius_top_right = 12
 	bg.corner_radius_bottom_left = 12; bg.corner_radius_bottom_right = 12
 	button.add_theme_stylebox_override("normal", bg)
+	button.add_theme_stylebox_override("hover", bg)
+	button.add_theme_stylebox_override("pressed", bg)
+	button.add_theme_stylebox_override("disabled", bg)
+	button.add_theme_stylebox_override("focus", bg)
 	button.add_theme_color_override("font_color", Color("fff4bd") if allowed else Color("71877f"))
 	button.add_theme_color_override("font_hover_color", Color.WHITE)
 
