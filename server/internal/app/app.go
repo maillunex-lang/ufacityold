@@ -155,6 +155,57 @@ func New(b Build, cfg Config) http.Handler {
 			}
 			writeJSON(w, 200, map[string]any{"winner": out.Result.Winner, "grantedGold": gold, "grantedHeroXp": xp, "granted": granted, "stage": stage})
 		})
+		mux.HandleFunc("GET "+Prefix+"/api/tower", func(w http.ResponseWriter, r *http.Request) {
+			acc, ok := auth(w, r)
+			if !ok {
+				return
+			}
+			cleared, floors, err := cfg.Store.Tower(acc)
+			if err != nil {
+				writeJSON(w, 500, map[string]string{"error": "internal"})
+				return
+			}
+			writeJSON(w, 200, map[string]any{"cleared": cleared, "floors": floors})
+		})
+		mux.HandleFunc("POST "+Prefix+"/api/tower/{floor}/fight", func(w http.ResponseWriter, r *http.Request) {
+			acc, ok := auth(w, r)
+			if !ok {
+				return
+			}
+			floor, err := strconv.Atoi(r.PathValue("floor"))
+			if err != nil {
+				writeJSON(w, 400, map[string]string{"error": "invalid_floor"})
+				return
+			}
+			cleared, floors, err := cfg.Store.Tower(acc)
+			if err != nil {
+				writeJSON(w, 500, map[string]string{"error": "internal"})
+				return
+			}
+			if floor < 1 || floor > len(floors) || !floors[floor-1].Open {
+				writeJSON(w, 404, map[string]string{"error": "floor_locked"})
+				return
+			}
+			out, err := battle.Run(battle.PrototypeSquads(), battle.DefaultEnergy)
+			if err != nil {
+				writeJSON(w, 500, map[string]string{"error": "internal"})
+				return
+			}
+			if out.Result.Winner != "player" {
+				writeJSON(w, 200, map[string]any{"winner": out.Result.Winner, "floor": floor, "boss": floor%5 == 0, "granted": false, "cleared": cleared})
+				return
+			}
+			gold, xp, granted, err := cfg.Store.ApplyTowerWin(acc, floor)
+			if err == store.ErrTowerLocked {
+				writeJSON(w, 404, map[string]string{"error": "floor_locked"})
+				return
+			}
+			if err != nil {
+				writeJSON(w, 500, map[string]string{"error": "internal"})
+				return
+			}
+			writeJSON(w, 200, map[string]any{"winner": "player", "floor": floor, "boss": floor%5 == 0, "grantedGold": gold, "grantedHeroXp": xp, "granted": granted, "cleared": floor})
+		})
 		mux.HandleFunc("POST "+Prefix+"/api/heroes/{id}/level", func(w http.ResponseWriter, r *http.Request) {
 			acc, ok := auth(w, r)
 			if !ok {
