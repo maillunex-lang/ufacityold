@@ -371,7 +371,7 @@ func (h *liveHub) serve(w http.ResponseWriter, r *http.Request, account int64) {
 		case "start":
 			s, code := h.begin(account, c)
 			if code == "already_running" && s != nil {
-				_ = writeLive(c, map[string]any{"type": "error", "error": code})
+				_ = s.emit(c, map[string]any{"type": "error", "error": code})
 				s.mu.Lock()
 				msg := s.snapshotLocked(true)
 				s.mu.Unlock()
@@ -379,7 +379,11 @@ func (h *liveHub) serve(w http.ResponseWriter, r *http.Request, account int64) {
 				continue
 			}
 			if code != "" {
-				_ = writeLive(c, map[string]any{"type": "error", "error": code})
+				if s != nil {
+					_ = s.emit(c, map[string]any{"type": "error", "error": code})
+				} else {
+					_ = writeLive(c, map[string]any{"type": "error", "error": code})
+				}
 				continue
 			}
 			s.mu.Lock()
