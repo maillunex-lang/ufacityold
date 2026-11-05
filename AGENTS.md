@@ -26,10 +26,11 @@
 
 ## 4. Устройство репозитория
 - `server/` — Go-сервер (`go.mod` задаёт версию Go). `internal/app` (HTTP), `internal/store` (SQLite + миграции в `internal/store/migrations`), `internal/assets` (манифест/раздача ресурсов), `internal/battle` (расчёт боя).
+- **Админка (этап 5, основа, сделана другим агентом, PR #5):** `server/internal/admin` (вход владельца, сессии, CSRF, интерфейс в `web/`), `server/internal/content` (версионированный контент: черновик → проверка → предпросмотр → публикация → возврат), миграция `0100_admin_content.sql`. По умолчанию **выключена** (включается хэшем пароля в окружении VPS). **Не править эти пакеты и `docs/ADMIN.md` без согласования**; единственная связь с боем — `server/internal/app/admin_preview.go` (при изменении `battle.Run`/`Energy`/`PrototypeSquads` обновить эту функцию). Подключение опубликованных версий к бою — отдельный согласуемый шаг (см. `docs/ADMIN.md`). Свои миграции нумеровать с `0004` и выше (номер `0100` занят админкой).
 - `client/` — Godot **4.7-stable**, рендерер GL Compatibility, портретный экран 1080×1920. Скрипты в `client/scripts` (`boot.gd`, `asset_loader.gd`, `battle.gd`, `safe_area.gd`, `session.gd`).
 - `tools/smoke-assets.sh` — интеграционная проверка клиент↔сервер (вход, загрузка ресурсов, докачка, повреждения, бой).
 - `deploy/server/` — файлы установки на VPS (выполняет владелец). `.github/` — CI и общее действие `setup-godot-android`.
-- `docs/` — документация (ROADMAP, DECISIONS, PROGRESS, DEPLOYMENT, SIGNING, PWA_ASSESSMENT, ASSETS, SPEC).
+- `docs/` — документация (ROADMAP, DECISIONS, PROGRESS, DEPLOYMENT, SIGNING, PWA_ASSESSMENT, ASSETS, SPEC, ADMIN, SECURITY).
 
 ## 5. Как собирать и проверять
 - Сервер: `cd server && gofmt -l . && go vet ./... && go test -race ./...` (для `-race` нужен cgo; без него `CGO_ENABLED=0 go test ./...`). Сборка: `CGO_ENABLED=0 go build ./cmd/lunexgame`. Локальный запуск: `LUNEXGAME_LISTEN=127.0.0.1:18741 LUNEXGAME_DB=/tmp/x.db go run ./cmd/lunexgame`. Сервер **обязан слушать только loopback**.
