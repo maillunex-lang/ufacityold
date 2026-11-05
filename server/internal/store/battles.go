@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"strings"
 
 	"lunexgame/internal/battle"
 )
@@ -12,6 +13,11 @@ import (
 var ErrNotFound = errors.New("not found")
 var ErrInvalidSpeed = errors.New("invalid speed")
 var ErrSpeedForbidden = errors.New("speed forbidden")
+
+// grantBattleReward — единственная точка будущего однократного начисления награды.
+// Сейчас наград нет: функция обязана быть идемпотентной и вызывается в той же
+// транзакции, что и первая запись результата. Повтор результата её не вызывает.
+var grantBattleReward = func(tx *sql.Tx, accountID int64, battleID string) error { return nil }
 
 type StoredBattle struct {
 	OutcomeJSON []byte
@@ -130,4 +136,45 @@ func (s *Store) SetBattleSpeed(accountID int64, id string, speed int) (battle.Pl
 		return options, err
 	}
 	return access.Options(speed), nil
+}
+
+// SaveFinishedBattle записывает результат живого боя один раз.
+// Повтор с тем же id (в том числе параллельный) не создаёт вторую строку и не начисляет награду снова.
+// balance — версия, закреплённая при старте боя, а не «текущая» на момент сохранения.
+func (s *Store) SaveFinishedBattle(accountID int64, id, balance, winner string, outcomeJSON []byte, speed int) (bool, battle.PlaybackOptions, error) {
+	var options battle.PlaybackOptions
+	if !battle.ValidSpeed(speed) || id == "" || balance == "" || winner == "" || len(outcomeJSON) == 0 {
+		return false, options, ErrInvalidSpeed
+	}
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return false, options, err
+	}
+	defer tx.Rollback()
+	access, err := speedAccess(tx, accountID)
+	if err != nil {
+		return false, options, err
+	}
+	options = access.Options(speed)
+	if !access.Allows(speed) {
+		return false, options, ErrSpeedForbidden
+	}
+	_, err = tx.Exec(`INSERT INTO battles(id,account_id,balance_version,winner,outcome_json,speed) VALUES(?,?,?,?,?,?)`,
+		id, accountID, balance, winner, string(outcomeJSON), speed)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			if err = tx.Commit(); err != nil {
+				return false, options, err
+			}
+			return false, options, nil
+		}
+		return false, options, err
+	}
+	if err = grantBattleReward(tx, accountID, id); err != nil {
+		return false, options, err
+	}
+	if err = tx.Commit(); err != nil {
+		return false, options, err
+	}
+	return true, options, nil
 }
