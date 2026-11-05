@@ -1,7 +1,7 @@
 extends Node3D
-## Проигрывание записи боя. HTTP API пока возвращает полный серверный расчёт.
-## Модели — ВРЕМЕННЫЕ примитивы. Главная способность срабатывает автоматически (полный автомат);
-## ручной запуск нажатием на портрет появится вместе с боем в реальном времени.
+## Живой бой: картинка идёт только из WebSocket /api/battle/live.
+## Сохранённая HTTP-запись сверяется в конце, но не проигрывается.
+## Модели — ВРЕМЕННЫЕ примитивы.
 
 const ROLE_COLORS := {
 	"tank": Color("5b7fa6"), "fighter": Color("c0504d"), "archer": Color("6aa84f"),
@@ -12,6 +12,7 @@ const BACK_X := 3.5
 const FRONT_Z := [-1.6, 1.6]
 const BACK_Z := [-3.2, 0.0, 3.2]
 const SMOKE_SPEED := 40.0
+const VISUAL_GAP := 1.55 # шире капсулы (0.84) и полоски HP (1.2), иначе центр читается как одна куча
 
 var speed: float = 1.0
 var smoke: bool = false
@@ -40,6 +41,30 @@ var hud: MarginContainer
 var speed_buttons: Dictionary = {}
 var allowed_speeds: Array = [1]
 var selected_speed: int = 1
+var auto_on: bool = true
+var auto_button: Button
+var live_ws: WebSocketPeer
+var spawned: bool = false
+var live_done: bool = false
+var failed: bool = false
+var server_t: int = 0
+var connect_msec: int = 0
+var reconnects: int = 0
+var saw_tick: bool = false
+var smoke_dropped: bool = false
+var resume_seen: bool = false
+var command_sent: bool = false
+var command_reported: bool = false
+var connected_reported: bool = false
+var tick_reported: bool = false
+var start_sent: bool = false
+var link_lost_reported: bool = false
+var link_hold_until: int = 0
+var link_note_until: int = 0
+var frame_labels: Array = []
+var visual_gap_min: float = 999.0
+var float_volley_n: int = 0
+var float_volley_spread: float = 0.0
 
 
 func _ready() -> void:
@@ -50,7 +75,13 @@ func _ready() -> void:
 		speed = float(OS.get_environment("LUNEXGAME_BATTLE_SPEED"))  # для записи кадров/отладки
 	_build_world()
 	_build_ui()
-	_load_battle()
+	_connect_live()
+
+
+func _exit_tree() -> void:
+	if live_ws != null:
+		live_ws.close()
+		live_ws = null
 
 
 func _build_world() -> void:
@@ -118,7 +149,7 @@ func _build_ui() -> void:
 	again_button.custom_minimum_size = Vector2(420, 120)
 	again_button.add_theme_font_size_override("font_size", 48)
 	again_button.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	again_button.pressed.connect(func() -> void: get_tree().reload_current_scene())
+	again_button.pressed.connect(_again)
 	again_button.hide()
 	msg.add_child(again_button)
 	var speed_row := HBoxContainer.new()
@@ -134,6 +165,13 @@ func _build_ui() -> void:
 		speed_row.add_child(button)
 		speed_buttons[value] = button
 	msg.add_child(speed_row)
+	auto_button = Button.new()
+	auto_button.custom_minimum_size = Vector2(280, 80)
+	auto_button.add_theme_font_size_override("font_size", 32)
+	auto_button.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	auto_button.pressed.connect(_toggle_auto)
+	_style_auto_button()
+	msg.add_child(auto_button)
 	msg.add_child(_ui_label("x2 после обучения, x4 с VIP 2", 22, Color("a8c8bd")))
 	var spacer := Control.new()
 	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -189,38 +227,257 @@ func _make_portrait(def: Dictionary) -> void:
 	en.add_theme_stylebox_override("fill", sb_fill)
 	en.add_theme_stylebox_override("background", sb_bg)
 	box.add_child(en)
+	var skill := Button.new()
+	skill.text = "Главная"
+	skill.custom_minimum_size = Vector2(0, 64)
+	skill.add_theme_font_size_override("font_size", 22)
+	skill.pressed.connect(func() -> void: _request_main_skill(str(def["id"])))
+	box.add_child(skill)
 	portrait_box.add_child(box)
 	portraits[str(def["id"])] = {"bar": en, "tint": tint}
 
 
-func _load_battle() -> void:
-	var req := HTTPRequest.new()
-	req.timeout = 20.0
-	add_child(req)
-	var hs := PackedStringArray(["Authorization: Bearer " + Session.token, "Content-Type: application/json"])
-	if req.request(Session.base_url + "/api/battle/start", hs, HTTPClient.METHOD_POST, JSON.stringify({"speed": 1})) != OK:
-		_fail("Не удалось отправить запрос боя")
+func _connect_live() -> void:
+	if live_ws != null:
+		live_ws.close()
+		live_ws = null
+	start_sent = false
+	connected_reported = false
+	live_ws = WebSocketPeer.new()
+	live_ws.handshake_headers = PackedStringArray(["Authorization: Bearer " + Session.token])
+	connect_msec = Time.get_ticks_msec()
+	var ws_url := Session.base_url.replace("https://", "wss://").replace("http://", "ws://") + "/api/battle/live"
+	if live_ws.connect_to_url(ws_url) != OK:
+		_fail("Не удалось открыть соединение боя")
+
+
+func _poll_live() -> void:
+	if live_ws == null or finished or failed:
 		return
-	var res: Array = await req.request_completed
-	req.queue_free()
-	if res[0] != HTTPRequest.RESULT_SUCCESS or res[1] != 200:
-		_fail("Сервер не выдал бой (код %d)" % int(res[1]))
+	live_ws.poll()
+	var ready := live_ws.get_ready_state()
+	if ready == WebSocketPeer.STATE_OPEN:
+		if not connected_reported:
+			connected_reported = true
+			print("BATTLE_LIVE_CONNECTED")
+		while live_ws.get_available_packet_count() > 0:
+			var data: Variant = JSON.parse_string(live_ws.get_packet().get_string_from_utf8())
+			if data is Dictionary:
+				_on_live(data)
+		_maybe_smoke_drop()
+	elif ready == WebSocketPeer.STATE_CLOSED:
+		if live_done:
+			return
+		if not connected_reported and Time.get_ticks_msec() - connect_msec < 8000:
+			return
+		if not link_lost_reported:
+			link_lost_reported = true
+			print("BATTLE_LINK_LOST")
+			status_label.text = "Связь прервана. Бой продолжается."
+			status_label.show()
+			var hold := int(OS.get_environment("LUNEXGAME_LINK_HOLD_MS")) if OS.get_environment("LUNEXGAME_LINK_HOLD_MS") != "" else 0
+			link_hold_until = Time.get_ticks_msec() + hold
+		if Time.get_ticks_msec() < link_hold_until:
+			return
+		reconnects += 1
+		if reconnects > 4:
+			_fail("Соединение с боем оборвалось")
+			return
+		_connect_live()
+
+
+func _maybe_smoke_drop() -> void:
+	if not smoke or smoke_dropped or not command_reported or live_done or live_ws == null:
 		return
-	var parsed: Variant = JSON.parse_string((res[3] as PackedByteArray).get_string_from_utf8())
-	if not (parsed is Dictionary) or not parsed.has("battle"):
-		_fail("Некорректный ответ сервера")
+	smoke_dropped = true
+	live_ws.close()
+
+
+func _on_live(msg: Dictionary) -> void:
+	match str(msg.get("type", "")):
+		"hello":
+			if bool(msg.get("needStart", false)) and not start_sent and live_ws != null:
+				start_sent = true
+				live_ws.send_text(JSON.stringify({"type": "start"}))
+		"state":
+			_on_state(msg)
+		"tick":
+			_on_tick(msg)
+		"auto":
+			auto_on = bool(msg.get("auto", auto_on))
+			_style_auto_button()
+			_log_speed_ui()
+		"error":
+			var code := str(msg.get("error", ""))
+			if code == "busy":
+				_fail("Сервер занят, бой не начат")
+			elif code == "internal":
+				_fail("Сервер не создал бой")
+		"command":
+			if not command_reported:
+				command_reported = true
+				print("BATTLE_LIVE_COMMAND accepted=%s" % str(bool(msg.get("accepted", false))).to_lower())
+
+
+func _on_state(msg: Dictionary) -> void:
+	var st: Dictionary = msg.get("state", {})
+	server_t = int(st.get("t", 0))
+	var resumed := bool(msg.get("resumed", false))
+	var new_id := str(msg.get("battleId", ""))
+	if spawned and new_id != "" and new_id != battle_id and not resumed:
+		_reset_battle_view()
+	if new_id != "":
+		battle_id = new_id
+	auto_on = bool(msg.get("auto", true))
+	_style_auto_button()
+	if resumed and reconnects > 0 and not resume_seen:
+		resume_seen = true
+		link_lost_reported = false
+		t_ms = float(server_t)
+		print("BATTLE_LIVE_RESUME resumed=true")
+		print("BATTLE_LINK_BACK auto=%s t=%d" % [str(auto_on).to_lower(), server_t])
+		status_label.text = "Связь восстановлена"
+		status_label.show()
+		link_note_until = Time.get_ticks_msec() + 1200
+	if not spawned:
+		var roster: Array = msg.get("roster", [])
+		if roster.is_empty():
+			_fail("Сервер не прислал состав боя")
+			return
+		for d in roster:
+			_spawn_unit(d)
+		spawned = true
+		_apply_playback(msg)
+		_snap_units(st.get("units", []))
+		status_label.hide()
+		playing = true
+		print("BATTLE_LOADED units=", units.size(), " events=", events.size(), " balance=", str(msg.get("balanceVersion", "?")), " speed=", selected_speed, " allowed_count=", allowed_speeds.size())
+	elif resumed:
+		t_ms = float(server_t)
+		_snap_units(st.get("units", []))
+		_skip_events_through(server_t)
+	if st.get("result") is Dictionary:
+		_mark_done(st)
+
+
+func _on_tick(msg: Dictionary) -> void:
+	saw_tick = true
+	if not tick_reported:
+		tick_reported = true
+		print("BATTLE_LIVE_TICK")
+	var batch: Variant = msg.get("events", [])
+	if batch is Array:
+		for e in batch:
+			events.append(e)
+	var st: Dictionary = msg.get("state", {})
+	if not st.is_empty():
+		server_t = int(st.get("t", server_t))
+		_maybe_command(st)
+	if bool(msg.get("done", false)) or st.get("result") is Dictionary:
+		_mark_done(st)
+
+
+func _maybe_command(st: Dictionary) -> void:
+	if command_sent or live_ws == null or live_ws.get_ready_state() != WebSocketPeer.STATE_OPEN:
 		return
-	var b: Dictionary = parsed["battle"]
-	battle_id = str(parsed.get("battleId", ""))
-	_apply_playback(parsed)
-	events = b["events"]
-	result = b["result"]
-	final_positions = b.get("positions", {})
-	for d in b["units"]:
-		_spawn_unit(d)
-	status_label.hide()
-	playing = true
-	print("BATTLE_LOADED units=", units.size(), " events=", events.size(), " balance=", b.get("balanceVersion", "?"), " speed=", int(parsed.get("speed", 1)), " allowed_count=", allowed_speeds.size())
+	for raw in st.get("units", []):
+		if not (raw is Dictionary):
+			continue
+		var id := str(raw.get("id", ""))
+		if units.has(id) and str(units[id]["def"].get("side", "")) == "player" and not bool(raw.get("dead", false)):
+			command_sent = true
+			live_ws.send_text(JSON.stringify({"type": "main_skill", "unitId": id}))
+			return
+
+
+func _request_main_skill(unit_id: String) -> void:
+	if live_ws == null or live_ws.get_ready_state() != WebSocketPeer.STATE_OPEN:
+		status_label.text = "Нет соединения с боем"
+		status_label.show()
+		return
+	command_sent = true
+	live_ws.send_text(JSON.stringify({"type": "main_skill", "unitId": unit_id}))
+
+
+func _mark_done(st: Dictionary) -> void:
+	if live_done:
+		return
+	var res: Variant = st.get("result", {})
+	if not (res is Dictionary) or (res as Dictionary).is_empty():
+		return
+	result = res
+	final_positions = {}
+	for raw in st.get("units", []):
+		if raw is Dictionary and raw.has("position"):
+			final_positions[str(raw["id"])] = raw["position"]
+	live_done = true
+
+
+func _snap_units(list: Array) -> void:
+	for raw in list:
+		if not (raw is Dictionary) or not units.has(str(raw.get("id", ""))):
+			continue
+		var u: Dictionary = units[str(raw["id"])]
+		u["hp"] = int(raw.get("hp", u["hp"]))
+		u["max"] = int(raw.get("maxHp", u["max"]))
+		u["dead"] = bool(raw.get("dead", false))
+		u["energy"] = int(raw.get("energy", 0))
+		if raw.has("position"):
+			u["pos"] = _server_pos(raw["position"])
+			(u["node"] as Node3D).position = u["pos"]
+			u["move"] = {}
+		var ready: Variant = raw.get("autoReadyAt", [])
+		if ready is Array:
+			for i in range(mini(2, (ready as Array).size())):
+				u["auto_ready_at"][i] = int(ready[i])
+		_update_bar(u)
+		(u["node"] as Node3D).visible = not u["dead"]
+		if portraits.has(str(raw["id"])):
+			var p: Dictionary = portraits[str(raw["id"])]
+			p["bar"].value = int(u["energy"])
+			p["tint"].modulate = Color(1.6, 1.6, 1.6) if int(u["energy"]) >= 100 else Color.WHITE
+
+
+func _skip_events_through(t: int) -> void:
+	while idx < events.size() and int(events[idx]["t"]) <= t:
+		idx += 1
+
+
+func _reset_battle_view() -> void:
+	for id in units.keys():
+		var n: Node = units[id]["node"]
+		if is_instance_valid(n):
+			n.queue_free()
+	units.clear()
+	for child in portrait_box.get_children():
+		child.queue_free()
+	portraits.clear()
+	events.clear()
+	idx = 0
+	t_ms = 0.0
+	server_t = 0
+	playing = false
+	finished = false
+	spawned = false
+	live_done = false
+	inconsistencies = 0
+	movement_events = 0
+	auto_skill_events[0] = 0
+	auto_skill_events[1] = 0
+	passive_events = 0
+	final_positions = {}
+	result = {}
+	saw_tick = false
+	command_sent = false
+	command_reported = false
+
+
+func _again() -> void:
+	if failed or live_ws == null or live_ws.get_ready_state() != WebSocketPeer.STATE_OPEN:
+		get_tree().reload_current_scene()
+		return
+	live_ws.send_text(JSON.stringify({"type": "start"}))
+
 
 
 func _apply_playback(payload: Dictionary) -> void:
@@ -253,6 +510,30 @@ func _log_speed_ui() -> void:
 	var enabled := x1 != null and not x1.disabled
 	var selected := enabled and selected_speed == 1
 	print("BATTLE_SPEED_UI x1_enabled=%s x1_selected=%s" % [str(enabled).to_lower(), str(selected).to_lower()])
+	print("BATTLE_AUTO_UI enabled=%s" % str(auto_on).to_lower())
+
+func _toggle_auto() -> void:
+	auto_on = not auto_on
+	_style_auto_button()
+	_log_speed_ui()
+	if live_ws != null and live_ws.get_ready_state() == WebSocketPeer.STATE_OPEN:
+		live_ws.send_text(JSON.stringify({"type": "set_auto", "auto": auto_on}))
+
+func _style_auto_button() -> void:
+	if auto_button == null:
+		return
+	auto_button.text = "Авто: вкл" if auto_on else "Авто: выкл"
+	var bg := StyleBoxFlat.new()
+	bg.bg_color = Color("294d44") if auto_on else Color("172b28")
+	bg.border_color = Color("e8d9a0") if auto_on else Color("35685c")
+	bg.set_border_width_all(5 if auto_on else 2)
+	bg.corner_radius_top_left = 12
+	bg.corner_radius_top_right = 12
+	bg.corner_radius_bottom_left = 12
+	bg.corner_radius_bottom_right = 12
+	for state_name in ["normal", "hover", "pressed", "disabled", "focus"]:
+		auto_button.add_theme_stylebox_override(state_name, bg)
+	auto_button.add_theme_color_override("font_color", Color("fff4bd") if auto_on else Color("71877f"))
 
 func _style_speed_button(button: Button, value: int, allowed: bool, selected: bool) -> void:
 	var bg := StyleBoxFlat.new()
@@ -290,6 +571,8 @@ func _set_battle_speed(value: int) -> void:
 
 
 func _fail(msg: String) -> void:
+	failed = true
+	finished = true
 	status_label.text = msg
 	again_button.text = "Повторить"
 	again_button.show()
@@ -374,15 +657,30 @@ func _spawn_unit(d: Dictionary) -> void:
 
 
 func _process(delta: float) -> void:
+	_poll_live()
+	if link_note_until > 0 and Time.get_ticks_msec() >= link_note_until and not failed:
+		status_label.hide()
+		link_note_until = 0
 	if not playing or finished:
 		return
-	t_ms += delta * 1000.0 * speed
+	var cap := float(server_t)
+	if live_done and result.has("durationMs"):
+		cap = maxf(cap, float(int(result["durationMs"])))
+	var advance := delta * 1000.0 * maxf(speed, 1.0)
+	t_ms = minf(cap, t_ms + advance)
+	if cap - t_ms > 250.0:
+		t_ms = cap
 	timer_label.text = "%d:%02d / 1:30" % [int(t_ms / 60000), int(fmod(t_ms / 1000.0, 60.0))]
+	frame_labels.clear()
+	for id in units:
+		(units[id]["node"] as Node3D).set_meta("frame_floats", 0)
 	while idx < events.size() and float(events[idx]["t"]) <= t_ms:
 		_apply(events[idx])
 		idx += 1
 	_advance_positions(t_ms)
-	if idx >= events.size() and t_ms >= float(result["durationMs"]) + 800.0:
+	_separate_visuals()
+	_measure_visuals()
+	if live_done and idx >= events.size() and t_ms >= float(int(result.get("durationMs", 0))):
 		_finish()
 
 
@@ -554,18 +852,27 @@ func _float_text(node: Node3D, text: String, color: Color) -> void:
 	var l := Label3D.new()
 	l.text = text
 	l.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	l.pixel_size = 0.008
-	l.font_size = 64
+	l.pixel_size = 0.007
+	l.font_size = 48
+	l.outline_size = 18
+	l.outline_modulate = Color(0, 0, 0, 0.9)
 	l.modulate = color
-	l.position = node.position + Vector3(0, 2.7, 0.3)
-	add_child(l)
+	# Столбик над своей моделью. Повтор слота в том же кадре запрещён:
+	# догон сервера может принести больше четырёх чисел одному герою.
+	var n := int(node.get_meta("frame_floats", 0))
+	node.set_meta("frame_floats", n + 1)
+	l.position = Vector3(0.0, 2.25 + 0.58 * float(n), 0.35)
+	node.add_child(l)
+	frame_labels.append(l)
 	var tw := _tween()
-	tw.tween_property(l, "position:y", l.position.y + 1.0, 0.7)
-	tw.parallel().tween_property(l, "modulate:a", 0.0, 0.7)
+	tw.tween_property(l, "position:y", l.position.y + 0.8, 0.65)
+	tw.parallel().tween_property(l, "modulate:a", 0.0, 0.65)
 	tw.tween_callback(l.queue_free)
 
 
 func _finish() -> void:
+	if finished:
+		return
 	finished = true
 	var player_alive := 0
 	var enemy_alive := 0
@@ -590,6 +897,14 @@ func _finish() -> void:
 	result_label.text = "ПОБЕДА" if winner == "player" else "ПОРАЖЕНИЕ"
 	result_label.show()
 	again_button.show()
+	if smoke:
+		# Порог ниже VISUAL_GAP: несколько проходов могут не дожать кучу до миллиметра.
+		if visual_gap_min < 1.20:
+			inconsistencies += 1
+		if float_volley_n < 3 or float_volley_spread < 0.45:
+			inconsistencies += 1
+		print("BATTLE_VISUAL_OK gap=%.3f float_n=%d float_spread=%.2f" % [visual_gap_min, float_volley_n, float_volley_spread])
+	await _confirm_saved_result()
 	if not final_positions.is_empty():
 		print("BATTLE_MOVEMENT_OK moves=%d inconsistencies=%d" % [movement_events, inconsistencies])
 	print("BATTLE_SKILLS_OK auto1=%d auto2=%d passives=%d inconsistencies=%d" % [
@@ -598,3 +913,107 @@ func _finish() -> void:
 		winner, str(result["reason"]), int(result["durationMs"]), events.size(), inconsistencies])
 	if smoke:
 		get_tree().quit(0 if inconsistencies == 0 else 1)
+
+
+func _confirm_saved_result() -> void:
+	# Запись нужна для сверки результата, а не для проигрывания.
+	if battle_id == "":
+		inconsistencies += 1
+		return
+	var req := HTTPRequest.new()
+	req.timeout = 10.0
+	add_child(req)
+	var hs := PackedStringArray(["Authorization: Bearer " + Session.token])
+	if req.request(Session.base_url + "/api/battle/" + battle_id, hs, HTTPClient.METHOD_GET) != OK:
+		inconsistencies += 1
+		req.queue_free()
+		return
+	var res: Array = await req.request_completed
+	req.queue_free()
+	if int(res[1]) != 200:
+		inconsistencies += 1
+		return
+	var parsed: Variant = JSON.parse_string((res[3] as PackedByteArray).get_string_from_utf8())
+	if not (parsed is Dictionary):
+		inconsistencies += 1
+		return
+	var battle: Variant = (parsed as Dictionary).get("battle", {})
+	if not (battle is Dictionary):
+		inconsistencies += 1
+		return
+	var saved: Variant = (battle as Dictionary).get("result", {})
+	if not (saved is Dictionary) or str((saved as Dictionary).get("winner", "")) != str(result.get("winner", "")):
+		inconsistencies += 1
+
+func _separate_visuals() -> void:
+	# Логические координаты сервера не трогаем: от них зависит сверка дальности.
+	# В расчёте ближние делят одну точку подхода (проба: дистанция 161 при диаметре 840).
+	# Здесь только рисунок: несколько проходов разводят модели, не меняя словарь pos.
+	var ids: Array = units.keys()
+	var shift := {}
+	for id in ids:
+		shift[id] = Vector3.ZERO
+	for _pass in range(12):
+		var pushed := false
+		for i in range(ids.size()):
+			var ia: String = ids[i]
+			if units[ia]["dead"]:
+				continue
+			for j in range(i + 1, ids.size()):
+				var ib: String = ids[j]
+				if units[ib]["dead"]:
+					continue
+				var a: Vector3 = units[ia]["pos"] + shift[ia]
+				var b: Vector3 = units[ib]["pos"] + shift[ib]
+				var delta := b - a
+				delta.y = 0.0
+				var dist := delta.length()
+				if dist >= VISUAL_GAP:
+					continue
+				pushed = true
+				var dir := Vector3(1, 0, 0) if dist < 0.001 else delta / dist
+				var push := (VISUAL_GAP - dist) * 0.5
+				shift[ia] = shift[ia] - dir * push
+				shift[ib] = shift[ib] + dir * push
+		if not pushed:
+			break
+	for id in ids:
+		var n: Node3D = units[id]["node"]
+		if is_instance_valid(n):
+			n.position = units[id]["pos"] + shift[id]
+
+
+func _measure_visuals() -> void:
+	if not smoke:
+		return
+	var ids: Array = units.keys()
+	for i in range(ids.size()):
+		if units[ids[i]]["dead"]:
+			continue
+		for j in range(i + 1, ids.size()):
+			if units[ids[j]]["dead"]:
+				continue
+			var delta: Vector3 = units[ids[j]]["node"].position - units[ids[i]]["node"].position
+			delta.y = 0.0
+			var dist := delta.length()
+			if dist < visual_gap_min:
+				visual_gap_min = dist
+	if frame_labels.size() >= 3:
+		var spread := 999.0
+		for i in range(frame_labels.size()):
+			var la: Node3D = frame_labels[i]
+			if not is_instance_valid(la):
+				continue
+			for j in range(i + 1, frame_labels.size()):
+				var lb: Node3D = frame_labels[j]
+				if not is_instance_valid(lb):
+					continue
+				# global_position в том же кадре ещё не включает сдвиг родителя.
+				var wa := (la.get_parent() as Node3D).position + la.position
+				var wb := (lb.get_parent() as Node3D).position + lb.position
+				var d := wa.distance_to(wb)
+				if d < spread:
+					spread = d
+		if frame_labels.size() > float_volley_n:
+			float_volley_n = frame_labels.size()
+			float_volley_spread = spread
