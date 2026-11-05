@@ -25,6 +25,15 @@ var DefaultEnergy = Energy{Max: 100, PerDealt: 0.08, PerTaken: 0.06, PerHealed: 
 
 type Role string
 
+type Faction string
+
+const (
+	FactionDawn  Faction = "dawn"
+	FactionTide  Faction = "tide"
+	FactionGrove Faction = "grove"
+	FactionEmber Faction = "ember"
+)
+
 const (
 	Tank    Role = "tank"
 	Fighter Role = "fighter"
@@ -38,6 +47,7 @@ type UnitDef struct {
 	ID            string       `json:"id"`
 	Name          string       `json:"name"`
 	Role          Role         `json:"role"`
+	Faction       Faction      `json:"faction"`
 	Rarity        string       `json:"rarity"`
 	Side          string       `json:"side"` // "player" | "enemy"
 	Slot          int          `json:"slot"`
