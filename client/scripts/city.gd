@@ -61,12 +61,8 @@ func _campaign()->void:
 		get_tree().quit(0)
 
 func _fight_stage(stage:int)->void:
-	var result:=await _post("/api/campaign/%d/fight"%stage)
-	if result.is_empty(): content.text="Не удалось начать бой"; return
-	var granted:=bool(result.get("granted",false)); content.text="Этап %d: %s\nНаграда: +%d золота, +%d опыта"%[stage,"ПОБЕДА" if str(result.get("winner",""))=="player" else "ПОРАЖЕНИЕ",int(result.get("grantedGold",0)),int(result.get("grantedHeroXp",0))]
-	if granted:
-		await get_tree().create_timer(1.5).timeout
-		await _home(false)
+	Session.campaign_stage = stage
+	get_tree().change_scene_to_file("res://scenes/battle.tscn")
 
 func _clear_campaign_rows()->void:
 	for row in campaign_rows:
