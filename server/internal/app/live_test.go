@@ -277,15 +277,16 @@ func TestLiveRejectsOversizedCommand(t *testing.T) {
 	if state := readLive(t, c, 2*time.Second); state["type"] != "state" {
 		t.Fatalf("state: %#v", state)
 	}
-	// Больше 1 КБ: раньше сервер принимал и многомегабайтные кадры.
-	if err := c.WriteJSON(map[string]any{"type": "main_skill", "unitId": strings.Repeat("x", 4096)}); err != nil {
-		t.Fatal(err)
+	// Больше 1 КБ: раньше сервер принимал и отвечал command. Теперь рвёт кадр.
+	err := c.WriteJSON(map[string]any{"type": "main_skill", "unitId": strings.Repeat("x", 4096)})
+	if err != nil {
+		return // соединение сброшено на слишком большом кадре
 	}
 	_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
 	var m map[string]any
-	err := c.ReadJSON(&m)
+	err = c.ReadJSON(&m)
 	if err == nil && (m["type"] == "command" || m["type"] == "tick" || m["type"] == "state") {
-		t.Fatalf("сообщение больше лимита принято: %#v", m)
+		t.Fatalf("сообщение больше лимита принято: %#v", m["type"])
 	}
 }
 
@@ -401,4 +402,69 @@ func wsURL(ts *httptest.Server) string {
 	u.Scheme = "ws"
 	u.Path = Prefix + "/api/battle/live"
 	return u.String()
+}
+
+func TestLiveResultPersistedOnce(t *testing.T) {
+	prevTick := liveTickNanos.Load()
+	liveTickNanos.Store(int64(time.Millisecond))
+	prevNew := newLiveBattle
+	newLiveBattle = func() (*battle.Battle, error) {
+		return battle.New(battle.PrototypeSquads(), battle.Config{Energy: battle.DefaultEnergy, BalanceVersion: "pinned-d8"})
+	}
+	t.Cleanup(func() {
+		liveTickNanos.Store(prevTick)
+		newLiveBattle = prevNew
+	})
+	st, err := store.Open(filepath.Join(t.TempDir(), "live.db"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	_, token, err := st.CreateGuest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(New(Build{}, Config{Store: st}))
+	t.Cleanup(func() {
+		liveEpoch.Add(1)
+		ts.Close()
+	})
+	c := dialLive(t, ts, token)
+	if hello := readLive(t, c, 2*time.Second); hello["type"] != "hello" {
+		t.Fatalf("hello: %#v", hello)
+	}
+	if err := c.WriteJSON(map[string]any{"type": "start"}); err != nil {
+		t.Fatal(err)
+	}
+	var battleID string
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		m := readLive(t, c, time.Until(deadline))
+		if id, _ := m["battleId"].(string); id != "" {
+			battleID = id
+		}
+		if stateDone(m) {
+			break
+		}
+	}
+	if battleID == "" {
+		t.Fatal("идентификатор боя не закреплён")
+	}
+	var n int
+	var balance, winner string
+	if err := st.DB.QueryRow(`SELECT COUNT(*), balance_version, winner FROM battles WHERE id=?`, battleID).Scan(&n, &balance, &winner); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 || balance != "pinned-d8" || winner == "" {
+		t.Fatalf("сохранено n=%d balance=%s winner=%s", n, balance, winner)
+	}
+	c.Close()
+	c2 := dialLive(t, ts, token)
+	again := readLive(t, c2, 2*time.Second)
+	if again["type"] != "state" || stateDone(again) != true {
+		t.Fatalf("результат не отдаётся повторно: %#v", again)
+	}
+	if err := st.DB.QueryRow(`SELECT COUNT(*) FROM battles WHERE id=?`, battleID).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("повторное подключение создало ещё строки: %d %v", n, err)
+	}
 }

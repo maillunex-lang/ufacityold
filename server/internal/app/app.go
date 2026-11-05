@@ -43,7 +43,7 @@ type Config struct {
 func New(b Build, cfg Config) http.Handler {
 	started := time.Now()
 	mux := http.NewServeMux()
-	live := &liveHub{sessions: map[int64]*liveSession{}}
+	live := &liveHub{sessions: map[int64]*liveSession{}, store: cfg.Store}
 
 	mux.HandleFunc("GET "+Prefix+"/{$}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")

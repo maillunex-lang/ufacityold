@@ -1,6 +1,10 @@
 package app
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"log"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -8,6 +12,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"lunexgame/internal/battle"
+	"lunexgame/internal/store"
 )
 
 type liveCommand struct {
@@ -24,12 +29,18 @@ type liveSession struct {
 	stop       chan struct{}
 	replaced   bool
 	finishedAt time.Time
+	id         string
+	account    int64
+	store      *store.Store
+	persisted  bool
+	saving     bool
 }
 
 type liveHub struct {
 	mu       sync.Mutex
 	sessions map[int64]*liveSession
 	janitor  bool
+	store    *store.Store
 }
 
 var liveUpgrader = websocket.Upgrader{ReadBufferSize: 4096, WriteBufferSize: 16384, CheckOrigin: func(*http.Request) bool { return true }}
@@ -149,7 +160,7 @@ func (s *liveSession) snapshotLocked(resumed bool) map[string]any {
 	state := s.battle.Snapshot()
 	return map[string]any{
 		"type": "state", "state": state, "balanceVersion": state.Balance,
-		"resumed": resumed, "auto": s.battle.PlayerAuto(),
+		"resumed": resumed, "auto": s.battle.PlayerAuto(), "battleId": s.id,
 	}
 }
 
@@ -247,11 +258,15 @@ func (h *liveHub) begin(account int64, c *websocket.Conn) (*liveSession, string)
 	if h.activeLocked() >= maxLiveBattles {
 		return nil, "busy"
 	}
+	id, err := newBattleID()
+	if err != nil {
+		return nil, "internal"
+	}
 	b, err := newLiveBattle()
 	if err != nil {
 		return nil, "internal"
 	}
-	s := &liveSession{battle: b, conn: c, stop: make(chan struct{})}
+	s := &liveSession{battle: b, conn: c, stop: make(chan struct{}), id: id, account: account, store: h.store}
 	h.sessions[account] = s
 	return s, ""
 }
@@ -397,10 +412,14 @@ func (s *liveSession) tick() {
 			}
 			s.mu.Lock()
 			if s.replaced || s.battle.Done() {
-				if s.battle.Done() && s.finishedAt.IsZero() {
+				done := s.battle.Done()
+				if done && s.finishedAt.IsZero() {
 					s.finishedAt = time.Now()
 				}
 				s.mu.Unlock()
+				if done {
+					s.persist()
+				}
 				return
 			}
 			events := s.battle.Step()
@@ -411,10 +430,56 @@ func (s *liveSession) tick() {
 			}
 			state := s.battle.Snapshot()
 			s.mu.Unlock()
-			_ = s.emit(c, map[string]any{"type": "tick", "events": events, "state": state, "done": done})
+			if done {
+				s.persist()
+			}
+			_ = s.emit(c, map[string]any{"type": "tick", "events": events, "state": state, "done": done, "battleId": s.id})
 			if done {
 				return
 			}
 		}
 	}
+}
+
+func newBattleID() (string, error) {
+	b := make([]byte, 12)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+// persist закрепляет результат и версию баланса один раз. Награды пока не начисляются:
+// место для них — grantBattleReward внутри транзакции SaveFinishedBattle.
+func (s *liveSession) persist() {
+	s.mu.Lock()
+	if s.persisted || s.saving || s.store == nil || s.battle == nil || !s.battle.Done() {
+		s.mu.Unlock()
+		return
+	}
+	out, ok := s.battle.Outcome()
+	if !ok {
+		s.mu.Unlock()
+		return
+	}
+	s.saving = true
+	id, account, st := s.id, s.account, s.store
+	s.mu.Unlock()
+	js, err := json.Marshal(out)
+	if err != nil {
+		s.mu.Lock()
+		s.saving = false
+		s.mu.Unlock()
+		log.Printf("живой бой %s: не удалось записать результат: %v", id, err)
+		return
+	}
+	_, _, err = st.SaveFinishedBattle(account, id, out.Balance, out.Result.Winner, js, 1)
+	s.mu.Lock()
+	s.saving = false
+	if err != nil {
+		log.Printf("живой бой %s: сохранение не удалось: %v", id, err)
+	} else {
+		s.persisted = true
+	}
+	s.mu.Unlock()
 }
