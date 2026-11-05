@@ -142,9 +142,10 @@ func (s *liveSession) bind(c *websocket.Conn) {
 	}
 }
 
-func (s *liveSession) stopTick() {
+func (s *liveSession) stopTick() *websocket.Conn {
 	s.writeMu.Lock()
 	s.mu.Lock()
+	old := s.conn
 	s.replaced = true
 	s.conn = nil
 	select {
@@ -154,6 +155,7 @@ func (s *liveSession) stopTick() {
 	}
 	s.mu.Unlock()
 	s.writeMu.Unlock()
+	return old
 }
 
 func (s *liveSession) snapshotLocked(resumed bool) map[string]any {
@@ -254,7 +256,7 @@ func (h *liveHub) usable(account int64) *liveSession {
 	return s
 }
 
-func (h *liveHub) begin(account int64, c *websocket.Conn) (*liveSession, string) {
+func (h *liveHub) begin(account int64, c *websocket.Conn, forceNew bool) (*liveSession, string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.gcLocked(time.Now())
@@ -262,11 +264,14 @@ func (h *liveHub) begin(account int64, c *websocket.Conn) (*liveSession, string)
 		cur.mu.Lock()
 		running := cur.runningLocked()
 		cur.mu.Unlock()
-		if running {
+		if running && !forceNew {
 			cur.bind(c)
 			return cur, "already_running"
 		}
-		cur.stopTick()
+		oldConn := cur.stopTick()
+		if forceNew && oldConn != nil && oldConn != c {
+			_ = oldConn.Close()
+		}
 		delete(h.sessions, account)
 	}
 	if h.activeLocked() >= maxLiveBattles {
@@ -351,12 +356,17 @@ func (h *liveHub) serve(w http.ResponseWriter, r *http.Request, account int64) {
 	defer close(stopPing)
 	go h.pingLoop(account, c, stopPing)
 	h.ensureJanitor()
-	if s := h.usable(account); s != nil {
-		s.bind(c)
-		s.mu.Lock()
-		msg := s.snapshotLocked(true)
-		s.mu.Unlock()
-		_ = s.emit(c, msg)
+	forceNew := r.URL.Query().Get("new") == "1"
+	if !forceNew {
+		if s := h.usable(account); s != nil {
+			s.bind(c)
+			s.mu.Lock()
+			msg := s.snapshotLocked(true)
+			s.mu.Unlock()
+			_ = s.emit(c, msg)
+		} else {
+			_ = writeLive(c, map[string]any{"type": "hello", "needStart": true})
+		}
 	} else {
 		_ = writeLive(c, map[string]any{"type": "hello", "needStart": true})
 	}
@@ -369,7 +379,8 @@ func (h *liveHub) serve(w http.ResponseWriter, r *http.Request, account int64) {
 		refreshRead()
 		switch cmd.Type {
 		case "start":
-			s, code := h.begin(account, c)
+			s, code := h.begin(account, c, forceNew)
+			forceNew = false
 			if code == "already_running" && s != nil {
 				_ = s.emit(c, map[string]any{"type": "error", "error": code})
 				s.mu.Lock()

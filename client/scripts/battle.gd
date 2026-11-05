@@ -257,6 +257,8 @@ func _connect_live() -> void:
 	live_ws.handshake_headers = PackedStringArray(["Authorization: Bearer " + Session.token])
 	connect_msec = Time.get_ticks_msec()
 	var ws_url := Session.base_url.replace("https://", "wss://").replace("http://", "ws://") + "/api/battle/live"
+	if force_new_battle:
+		ws_url += "?new=1"
 	if live_ws.connect_to_url(ws_url) != OK:
 		_fail("Не удалось открыть соединение боя")
 
@@ -309,6 +311,9 @@ func _on_live(msg: Dictionary) -> void:
 			if bool(msg.get("needStart", false)) and not start_sent and live_ws != null:
 				start_sent = true
 				live_ws.send_text(JSON.stringify({"type": "start"}))
+				# Параметр new=1 нужен только для первого старта после входа
+				# в сцену. Последующий обрыв должен восстановить этот же бой.
+				force_new_battle = false
 		"state":
 			_on_state(msg)
 		"tick":
