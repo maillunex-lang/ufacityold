@@ -4,6 +4,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -255,5 +256,79 @@ func TestLiveAutoToggle(t *testing.T) {
 	ack := readLive(t, c, 2*time.Second)
 	if ack["type"] != "auto" || ack["auto"] != false {
 		t.Fatalf("переключатель: %#v", ack)
+	}
+}
+
+func TestLiveRejectsOversizedCommand(t *testing.T) {
+	prev := liveTickNanos.Load()
+	liveTickNanos.Store(int64(time.Hour))
+	t.Cleanup(func() { liveTickNanos.Store(prev) })
+	ts, token := newLiveServer(t)
+	c := dialLive(t, ts, token)
+	if hello := readLive(t, c, 2*time.Second); hello["type"] != "hello" {
+		t.Fatalf("hello: %#v", hello)
+	}
+	if err := c.WriteJSON(map[string]any{"type": "start"}); err != nil {
+		t.Fatal(err)
+	}
+	if state := readLive(t, c, 2*time.Second); state["type"] != "state" {
+		t.Fatalf("state: %#v", state)
+	}
+	// Больше 1 КБ: раньше сервер принимал и многомегабайтные кадры.
+	if err := c.WriteJSON(map[string]any{"type": "main_skill", "unitId": strings.Repeat("x", 4096)}); err != nil {
+		t.Fatal(err)
+	}
+	_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	var m map[string]any
+	err := c.ReadJSON(&m)
+	if err == nil && (m["type"] == "command" || m["type"] == "tick" || m["type"] == "state") {
+		t.Fatalf("сообщение больше лимита принято: %#v", m)
+	}
+}
+
+func TestLiveSendsPing(t *testing.T) {
+	prev := livePingNanos.Load()
+	livePingNanos.Store(int64(30 * time.Millisecond))
+	t.Cleanup(func() { livePingNanos.Store(prev) })
+	ts, token := newLiveServer(t)
+	c := dialLive(t, ts, token)
+	pinged := make(chan struct{}, 1)
+	c.SetPingHandler(func(appData string) error {
+		select {
+		case pinged <- struct{}{}:
+		default:
+		}
+		return c.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(time.Second))
+	})
+	go func() {
+		for {
+			if _, _, err := c.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}()
+	select {
+	case <-pinged:
+	case <-time.After(2 * time.Second):
+		t.Fatal("сервер не прислал ping")
+	}
+}
+
+func TestLiveReplacedConnectionIsClosed(t *testing.T) {
+	prev := liveTickNanos.Load()
+	liveTickNanos.Store(int64(time.Hour))
+	t.Cleanup(func() { liveTickNanos.Store(prev) })
+	ts, token := newLiveServer(t)
+	c1 := dialLive(t, ts, token)
+	_ = readLive(t, c1, 2*time.Second)
+	if err := c1.WriteJSON(map[string]any{"type": "start"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = readLive(t, c1, 2*time.Second)
+	c2 := dialLive(t, ts, token)
+	_ = readLive(t, c2, 2*time.Second)
+	_ = c1.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, _, err := c1.ReadMessage(); err == nil {
+		t.Fatal("прежнее соединение при замене не закрыто")
 	}
 }
