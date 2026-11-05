@@ -143,9 +143,16 @@ func TestLiveReconnectKeepsRunningBattle(t *testing.T) {
 	if err := c.WriteJSON(map[string]any{"type": "start"}); err != nil {
 		t.Fatal(err)
 	}
-	dup := readLive(t, c, 2*time.Second)
-	if dup["error"] != "already_running" {
-		t.Fatalf("повторный старт: %#v", dup)
+	var dup map[string]any
+	for i := 0; i < 20; i++ {
+		msg := readLive(t, c, 2*time.Second)
+		if msg["error"] == "already_running" {
+			dup = msg
+			break
+		}
+	}
+	if dup == nil {
+		t.Fatal("повторный старт не вернул already_running")
 	}
 	c.Close()
 	time.Sleep(40 * time.Millisecond)

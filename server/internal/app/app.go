@@ -171,6 +171,22 @@ func New(b Build, cfg Config) http.Handler {
 			}
 			writeJSON(w, 200, state)
 		})
+		mux.HandleFunc("POST "+Prefix+"/api/afk/claim", func(w http.ResponseWriter, r *http.Request) {
+			acc, ok := auth(w, r)
+			if !ok {
+				return
+			}
+			reward, elapsed, err := cfg.Store.ClaimAFK(acc, time.Now().UTC())
+			if err == store.ErrNotFound {
+				writeJSON(w, 404, map[string]string{"error": "not_found"})
+				return
+			}
+			if err != nil {
+				writeJSON(w, 500, map[string]string{"error": "internal"})
+				return
+			}
+			writeJSON(w, 200, map[string]any{"grantedGold": reward, "elapsedSeconds": elapsed, "capSeconds": 12 * 60 * 60})
+		})
 		// Прототип: бой рассчитывается целиком на сервере (полный автомат), клиент проигрывает запись.
 		mux.HandleFunc("POST "+Prefix+"/api/battle/start", func(w http.ResponseWriter, r *http.Request) {
 			acc, ok := auth(w, r)
