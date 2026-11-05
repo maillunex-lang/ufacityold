@@ -49,8 +49,20 @@ func _level_up(id:String)->void:
 	await _heroes()
 
 func _post(path:String)->Dictionary:
-	var r:=HTTPRequest.new(); add_child(r); var h:=PackedStringArray(["Authorization: Bearer "+Session.token]); if r.request(Session.base_url+path,h,HTTPClient.METHOD_POST)!=OK:return {}
-	var x:Array=await r.request_completed; r.queue_free(); if x[0]!=HTTPRequest.RESULT_SUCCESS:return {}; var p:Variant=JSON.parse_string((x[3] as PackedByteArray).get_string_from_utf8()); return p if p is Dictionary and x[1]==200 else {}
+	var r:=HTTPRequest.new()
+	add_child(r)
+	var h:=PackedStringArray(["Authorization: Bearer "+Session.token])
+	if r.request(Session.base_url+path,h,HTTPClient.METHOD_POST)!=OK:
+		r.queue_free()
+		return {}
+	var x:Array=await r.request_completed
+	r.queue_free()
+	if x[0]!=HTTPRequest.RESULT_SUCCESS or x[1]!=200:
+		return {}
+	var p:Variant=JSON.parse_string((x[3] as PackedByteArray).get_string_from_utf8())
+	if p is Dictionary:
+		return p
+	return {}
 
 func _request(path:String)->Dictionary:
 	var r:=HTTPRequest.new()
