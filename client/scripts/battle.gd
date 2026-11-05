@@ -1,7 +1,7 @@
 extends Node3D
-## Проигрывание записи боя. HTTP API пока возвращает полный серверный расчёт.
-## Модели — ВРЕМЕННЫЕ примитивы. Главная способность срабатывает автоматически (полный автомат);
-## ручной запуск нажатием на портрет появится вместе с боем в реальном времени.
+## Живой бой: картинка идёт только из WebSocket /api/battle/live.
+## Сохранённая HTTP-запись сверяется в конце, но не проигрывается.
+## Модели — ВРЕМЕННЫЕ примитивы.
 
 const ROLE_COLORS := {
 	"tank": Color("5b7fa6"), "fighter": Color("c0504d"), "archer": Color("6aa84f"),
@@ -42,6 +42,21 @@ var allowed_speeds: Array = [1]
 var selected_speed: int = 1
 var auto_on: bool = true
 var auto_button: Button
+var live_ws: WebSocketPeer
+var spawned: bool = false
+var live_done: bool = false
+var failed: bool = false
+var server_t: int = 0
+var connect_msec: int = 0
+var reconnects: int = 0
+var saw_tick: bool = false
+var smoke_dropped: bool = false
+var resume_seen: bool = false
+var command_sent: bool = false
+var command_reported: bool = false
+var connected_reported: bool = false
+var tick_reported: bool = false
+var start_sent: bool = false
 
 
 func _ready() -> void:
@@ -52,7 +67,13 @@ func _ready() -> void:
 		speed = float(OS.get_environment("LUNEXGAME_BATTLE_SPEED"))  # для записи кадров/отладки
 	_build_world()
 	_build_ui()
-	_load_battle()
+	_connect_live()
+
+
+func _exit_tree() -> void:
+	if live_ws != null:
+		live_ws.close()
+		live_ws = null
 
 
 func _build_world() -> void:
@@ -120,7 +141,7 @@ func _build_ui() -> void:
 	again_button.custom_minimum_size = Vector2(420, 120)
 	again_button.add_theme_font_size_override("font_size", 48)
 	again_button.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	again_button.pressed.connect(func() -> void: get_tree().reload_current_scene())
+	again_button.pressed.connect(_again)
 	again_button.hide()
 	msg.add_child(again_button)
 	var speed_row := HBoxContainer.new()
@@ -198,38 +219,241 @@ func _make_portrait(def: Dictionary) -> void:
 	en.add_theme_stylebox_override("fill", sb_fill)
 	en.add_theme_stylebox_override("background", sb_bg)
 	box.add_child(en)
+	var skill := Button.new()
+	skill.text = "Главная"
+	skill.custom_minimum_size = Vector2(0, 64)
+	skill.add_theme_font_size_override("font_size", 22)
+	skill.pressed.connect(func() -> void: _request_main_skill(str(def["id"])))
+	box.add_child(skill)
 	portrait_box.add_child(box)
 	portraits[str(def["id"])] = {"bar": en, "tint": tint}
 
 
-func _load_battle() -> void:
-	var req := HTTPRequest.new()
-	req.timeout = 20.0
-	add_child(req)
-	var hs := PackedStringArray(["Authorization: Bearer " + Session.token, "Content-Type: application/json"])
-	if req.request(Session.base_url + "/api/battle/start", hs, HTTPClient.METHOD_POST, JSON.stringify({"speed": 1})) != OK:
-		_fail("Не удалось отправить запрос боя")
+func _connect_live() -> void:
+	if live_ws != null:
+		live_ws.close()
+		live_ws = null
+	start_sent = false
+	connected_reported = false
+	live_ws = WebSocketPeer.new()
+	live_ws.handshake_headers = PackedStringArray(["Authorization: Bearer " + Session.token])
+	connect_msec = Time.get_ticks_msec()
+	var ws_url := Session.base_url.replace("https://", "wss://").replace("http://", "ws://") + "/api/battle/live"
+	if live_ws.connect_to_url(ws_url) != OK:
+		_fail("Не удалось открыть соединение боя")
+
+
+func _poll_live() -> void:
+	if live_ws == null or finished or failed:
 		return
-	var res: Array = await req.request_completed
-	req.queue_free()
-	if res[0] != HTTPRequest.RESULT_SUCCESS or res[1] != 200:
-		_fail("Сервер не выдал бой (код %d)" % int(res[1]))
+	live_ws.poll()
+	var ready := live_ws.get_ready_state()
+	if ready == WebSocketPeer.STATE_OPEN:
+		if not connected_reported:
+			connected_reported = true
+			print("BATTLE_LIVE_CONNECTED")
+		while live_ws.get_available_packet_count() > 0:
+			var data: Variant = JSON.parse_string(live_ws.get_packet().get_string_from_utf8())
+			if data is Dictionary:
+				_on_live(data)
+		_maybe_smoke_drop()
+	elif ready == WebSocketPeer.STATE_CLOSED:
+		if live_done:
+			return
+		if not connected_reported and Time.get_ticks_msec() - connect_msec < 8000:
+			return
+		reconnects += 1
+		if reconnects > 4:
+			_fail("Соединение с боем оборвалось")
+			return
+		_connect_live()
+
+
+func _maybe_smoke_drop() -> void:
+	if not smoke or smoke_dropped or not command_reported or live_done or live_ws == null:
 		return
-	var parsed: Variant = JSON.parse_string((res[3] as PackedByteArray).get_string_from_utf8())
-	if not (parsed is Dictionary) or not parsed.has("battle"):
-		_fail("Некорректный ответ сервера")
+	smoke_dropped = true
+	live_ws.close()
+
+
+func _on_live(msg: Dictionary) -> void:
+	match str(msg.get("type", "")):
+		"hello":
+			if bool(msg.get("needStart", false)) and not start_sent and live_ws != null:
+				start_sent = true
+				live_ws.send_text(JSON.stringify({"type": "start"}))
+		"state":
+			_on_state(msg)
+		"tick":
+			_on_tick(msg)
+		"auto":
+			auto_on = bool(msg.get("auto", auto_on))
+			_style_auto_button()
+			_log_speed_ui()
+		"error":
+			var code := str(msg.get("error", ""))
+			if code == "busy":
+				_fail("Сервер занят, бой не начат")
+			elif code == "internal":
+				_fail("Сервер не создал бой")
+		"command":
+			if not command_reported:
+				command_reported = true
+				print("BATTLE_LIVE_COMMAND accepted=%s" % str(bool(msg.get("accepted", false))).to_lower())
+
+
+func _on_state(msg: Dictionary) -> void:
+	var st: Dictionary = msg.get("state", {})
+	server_t = int(st.get("t", 0))
+	var resumed := bool(msg.get("resumed", false))
+	var new_id := str(msg.get("battleId", ""))
+	if spawned and new_id != "" and new_id != battle_id and not resumed:
+		_reset_battle_view()
+	if new_id != "":
+		battle_id = new_id
+	auto_on = bool(msg.get("auto", true))
+	_style_auto_button()
+	if resumed and smoke_dropped and not resume_seen:
+		resume_seen = true
+		print("BATTLE_LIVE_RESUME resumed=true")
+	if not spawned:
+		var roster: Array = msg.get("roster", [])
+		if roster.is_empty():
+			_fail("Сервер не прислал состав боя")
+			return
+		for d in roster:
+			_spawn_unit(d)
+		spawned = true
+		_apply_playback(msg)
+		_snap_units(st.get("units", []))
+		status_label.hide()
+		playing = true
+		print("BATTLE_LOADED units=", units.size(), " events=", events.size(), " balance=", str(msg.get("balanceVersion", "?")), " speed=", selected_speed, " allowed_count=", allowed_speeds.size())
+	elif resumed:
+		_snap_units(st.get("units", []))
+		_skip_events_through(server_t)
+	if st.get("result") is Dictionary:
+		_mark_done(st)
+
+
+func _on_tick(msg: Dictionary) -> void:
+	saw_tick = true
+	if not tick_reported:
+		tick_reported = true
+		print("BATTLE_LIVE_TICK")
+	var batch: Variant = msg.get("events", [])
+	if batch is Array:
+		for e in batch:
+			events.append(e)
+	var st: Dictionary = msg.get("state", {})
+	if not st.is_empty():
+		server_t = int(st.get("t", server_t))
+		_maybe_command(st)
+	if bool(msg.get("done", false)) or st.get("result") is Dictionary:
+		_mark_done(st)
+
+
+func _maybe_command(st: Dictionary) -> void:
+	if command_sent or live_ws == null or live_ws.get_ready_state() != WebSocketPeer.STATE_OPEN:
 		return
-	var b: Dictionary = parsed["battle"]
-	battle_id = str(parsed.get("battleId", ""))
-	_apply_playback(parsed)
-	events = b["events"]
-	result = b["result"]
-	final_positions = b.get("positions", {})
-	for d in b["units"]:
-		_spawn_unit(d)
-	status_label.hide()
-	playing = true
-	print("BATTLE_LOADED units=", units.size(), " events=", events.size(), " balance=", b.get("balanceVersion", "?"), " speed=", int(parsed.get("speed", 1)), " allowed_count=", allowed_speeds.size())
+	for raw in st.get("units", []):
+		if not (raw is Dictionary):
+			continue
+		var id := str(raw.get("id", ""))
+		if units.has(id) and str(units[id]["def"].get("side", "")) == "player" and not bool(raw.get("dead", false)):
+			command_sent = true
+			live_ws.send_text(JSON.stringify({"type": "main_skill", "unitId": id}))
+			return
+
+
+func _request_main_skill(unit_id: String) -> void:
+	if live_ws == null or live_ws.get_ready_state() != WebSocketPeer.STATE_OPEN:
+		status_label.text = "Нет соединения с боем"
+		status_label.show()
+		return
+	command_sent = true
+	live_ws.send_text(JSON.stringify({"type": "main_skill", "unitId": unit_id}))
+
+
+func _mark_done(st: Dictionary) -> void:
+	if live_done:
+		return
+	var res: Variant = st.get("result", {})
+	if not (res is Dictionary) or (res as Dictionary).is_empty():
+		return
+	result = res
+	final_positions = {}
+	for raw in st.get("units", []):
+		if raw is Dictionary and raw.has("position"):
+			final_positions[str(raw["id"])] = raw["position"]
+	live_done = true
+
+
+func _snap_units(list: Array) -> void:
+	for raw in list:
+		if not (raw is Dictionary) or not units.has(str(raw.get("id", ""))):
+			continue
+		var u: Dictionary = units[str(raw["id"])]
+		u["hp"] = int(raw.get("hp", u["hp"]))
+		u["max"] = int(raw.get("maxHp", u["max"]))
+		u["dead"] = bool(raw.get("dead", false))
+		u["energy"] = int(raw.get("energy", 0))
+		if raw.has("position"):
+			u["pos"] = _server_pos(raw["position"])
+			(u["node"] as Node3D).position = u["pos"]
+			u["move"] = {}
+		var ready: Variant = raw.get("autoReadyAt", [])
+		if ready is Array:
+			for i in range(mini(2, (ready as Array).size())):
+				u["auto_ready_at"][i] = int(ready[i])
+		_update_bar(u)
+		(u["node"] as Node3D).visible = not u["dead"]
+		if portraits.has(str(raw["id"])):
+			var p: Dictionary = portraits[str(raw["id"])]
+			p["bar"].value = int(u["energy"])
+			p["tint"].modulate = Color(1.6, 1.6, 1.6) if int(u["energy"]) >= 100 else Color.WHITE
+
+
+func _skip_events_through(t: int) -> void:
+	while idx < events.size() and int(events[idx]["t"]) <= t:
+		idx += 1
+
+
+func _reset_battle_view() -> void:
+	for id in units.keys():
+		var n: Node = units[id]["node"]
+		if is_instance_valid(n):
+			n.queue_free()
+	units.clear()
+	for child in portrait_box.get_children():
+		child.queue_free()
+	portraits.clear()
+	events.clear()
+	idx = 0
+	t_ms = 0.0
+	server_t = 0
+	playing = false
+	finished = false
+	spawned = false
+	live_done = false
+	inconsistencies = 0
+	movement_events = 0
+	auto_skill_events[0] = 0
+	auto_skill_events[1] = 0
+	passive_events = 0
+	final_positions = {}
+	result = {}
+	saw_tick = false
+	command_sent = false
+	command_reported = false
+
+
+func _again() -> void:
+	if failed or live_ws == null or live_ws.get_ready_state() != WebSocketPeer.STATE_OPEN:
+		get_tree().reload_current_scene()
+		return
+	live_ws.send_text(JSON.stringify({"type": "start"}))
+
 
 
 func _apply_playback(payload: Dictionary) -> void:
@@ -267,8 +491,9 @@ func _log_speed_ui() -> void:
 func _toggle_auto() -> void:
 	auto_on = not auto_on
 	_style_auto_button()
-	# Запись HTTP уже посчитана полным автоматом. Команда set_auto уйдёт в живой бой (D7).
-	print("BATTLE_AUTO_UI enabled=%s" % str(auto_on).to_lower())
+	_log_speed_ui()
+	if live_ws != null and live_ws.get_ready_state() == WebSocketPeer.STATE_OPEN:
+		live_ws.send_text(JSON.stringify({"type": "set_auto", "auto": auto_on}))
 
 func _style_auto_button() -> void:
 	if auto_button == null:
@@ -322,6 +547,8 @@ func _set_battle_speed(value: int) -> void:
 
 
 func _fail(msg: String) -> void:
+	failed = true
+	finished = true
 	status_label.text = msg
 	again_button.text = "Повторить"
 	again_button.show()
@@ -406,15 +633,22 @@ func _spawn_unit(d: Dictionary) -> void:
 
 
 func _process(delta: float) -> void:
+	_poll_live()
 	if not playing or finished:
 		return
-	t_ms += delta * 1000.0 * speed
+	var cap := float(server_t)
+	if live_done and result.has("durationMs"):
+		cap = maxf(cap, float(int(result["durationMs"])))
+	var advance := delta * 1000.0 * maxf(speed, 1.0)
+	t_ms = minf(cap, t_ms + advance)
+	if cap - t_ms > 250.0:
+		t_ms = cap
 	timer_label.text = "%d:%02d / 1:30" % [int(t_ms / 60000), int(fmod(t_ms / 1000.0, 60.0))]
 	while idx < events.size() and float(events[idx]["t"]) <= t_ms:
 		_apply(events[idx])
 		idx += 1
 	_advance_positions(t_ms)
-	if idx >= events.size() and t_ms >= float(result["durationMs"]) + 800.0:
+	if live_done and idx >= events.size() and t_ms >= float(int(result.get("durationMs", 0))):
 		_finish()
 
 
@@ -598,6 +832,8 @@ func _float_text(node: Node3D, text: String, color: Color) -> void:
 
 
 func _finish() -> void:
+	if finished:
+		return
 	finished = true
 	var player_alive := 0
 	var enemy_alive := 0
@@ -622,6 +858,7 @@ func _finish() -> void:
 	result_label.text = "ПОБЕДА" if winner == "player" else "ПОРАЖЕНИЕ"
 	result_label.show()
 	again_button.show()
+	await _confirm_saved_result()
 	if not final_positions.is_empty():
 		print("BATTLE_MOVEMENT_OK moves=%d inconsistencies=%d" % [movement_events, inconsistencies])
 	print("BATTLE_SKILLS_OK auto1=%d auto2=%d passives=%d inconsistencies=%d" % [
@@ -630,3 +867,34 @@ func _finish() -> void:
 		winner, str(result["reason"]), int(result["durationMs"]), events.size(), inconsistencies])
 	if smoke:
 		get_tree().quit(0 if inconsistencies == 0 else 1)
+
+
+func _confirm_saved_result() -> void:
+	# Запись нужна для сверки результата, а не для проигрывания.
+	if battle_id == "":
+		inconsistencies += 1
+		return
+	var req := HTTPRequest.new()
+	req.timeout = 10.0
+	add_child(req)
+	var hs := PackedStringArray(["Authorization: Bearer " + Session.token])
+	if req.request(Session.base_url + "/api/battle/" + battle_id, hs, HTTPClient.METHOD_GET) != OK:
+		inconsistencies += 1
+		req.queue_free()
+		return
+	var res: Array = await req.request_completed
+	req.queue_free()
+	if int(res[1]) != 200:
+		inconsistencies += 1
+		return
+	var parsed: Variant = JSON.parse_string((res[3] as PackedByteArray).get_string_from_utf8())
+	if not (parsed is Dictionary):
+		inconsistencies += 1
+		return
+	var battle: Variant = (parsed as Dictionary).get("battle", {})
+	if not (battle is Dictionary):
+		inconsistencies += 1
+		return
+	var saved: Variant = (battle as Dictionary).get("result", {})
+	if not (saved is Dictionary) or str((saved as Dictionary).get("winner", "")) != str(result.get("winner", "")):
+		inconsistencies += 1

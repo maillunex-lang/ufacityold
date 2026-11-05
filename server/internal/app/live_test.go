@@ -468,3 +468,43 @@ func TestLiveResultPersistedOnce(t *testing.T) {
 		t.Fatalf("повторное подключение создало ещё строки: %d %v", n, err)
 	}
 }
+
+// D7: клиент рисует живой бой, а не HTTP-запись. В снимке должны быть состав
+// (роль, имя, сторона) и разрешённые скорости — иначе сцена не из чего собрать героев.
+func TestLiveStateIncludesRoster(t *testing.T) {
+	ts, token := newLiveServer(t)
+	c := dialLive(t, ts, token)
+	hello := readLive(t, c, 2*time.Second)
+	if hello["type"] != "hello" {
+		t.Fatalf("hello: %#v", hello["type"])
+	}
+	if err := c.WriteJSON(map[string]any{"type": "start"}); err != nil {
+		t.Fatal(err)
+	}
+	st := readLive(t, c, 2*time.Second)
+	if st["type"] != "state" {
+		t.Fatalf("state: %#v", st["type"])
+	}
+	roster, _ := st["roster"].([]any)
+	if len(roster) != 10 {
+		t.Fatalf("в снимке нет состава для отрисовки: %d", len(roster))
+	}
+	unit, _ := roster[0].(map[string]any)
+	if unit["id"] == nil || unit["name"] == nil || unit["role"] == nil || unit["side"] == nil {
+		t.Fatalf("герой без полей для сцены: %#v", unit)
+	}
+	speeds, _ := st["allowedSpeeds"].([]any)
+	if len(speeds) == 0 || int(speeds[0].(float64)) != 1 {
+		t.Fatalf("скорости: %#v", st["allowedSpeeds"])
+	}
+	c.Close()
+	c2 := dialLive(t, ts, token)
+	again := readLive(t, c2, 2*time.Second)
+	if again["type"] != "state" || again["resumed"] != true {
+		t.Fatalf("переподключение: %#v", again["type"])
+	}
+	roster2, _ := again["roster"].([]any)
+	if len(roster2) != 10 {
+		t.Fatalf("после переподключения состав потерян: %d", len(roster2))
+	}
+}
