@@ -58,6 +58,9 @@ var command_reported: bool = false
 var connected_reported: bool = false
 var tick_reported: bool = false
 var start_sent: bool = false
+var link_lost_reported: bool = false
+var link_hold_until: int = 0
+var link_note_until: int = 0
 var frame_labels: Array = []
 var visual_gap_min: float = 999.0
 var float_volley_n: int = 0
@@ -267,6 +270,15 @@ func _poll_live() -> void:
 			return
 		if not connected_reported and Time.get_ticks_msec() - connect_msec < 8000:
 			return
+		if not link_lost_reported:
+			link_lost_reported = true
+			print("BATTLE_LINK_LOST")
+			status_label.text = "Связь прервана. Бой продолжается."
+			status_label.show()
+			var hold := int(OS.get_environment("LUNEXGAME_LINK_HOLD_MS")) if OS.get_environment("LUNEXGAME_LINK_HOLD_MS") != "" else 0
+			link_hold_until = Time.get_ticks_msec() + hold
+		if Time.get_ticks_msec() < link_hold_until:
+			return
 		reconnects += 1
 		if reconnects > 4:
 			_fail("Соединение с боем оборвалось")
@@ -318,9 +330,15 @@ func _on_state(msg: Dictionary) -> void:
 		battle_id = new_id
 	auto_on = bool(msg.get("auto", true))
 	_style_auto_button()
-	if resumed and smoke_dropped and not resume_seen:
+	if resumed and reconnects > 0 and not resume_seen:
 		resume_seen = true
+		link_lost_reported = false
+		t_ms = float(server_t)
 		print("BATTLE_LIVE_RESUME resumed=true")
+		print("BATTLE_LINK_BACK auto=%s t=%d" % [str(auto_on).to_lower(), server_t])
+		status_label.text = "Связь восстановлена"
+		status_label.show()
+		link_note_until = Time.get_ticks_msec() + 1200
 	if not spawned:
 		var roster: Array = msg.get("roster", [])
 		if roster.is_empty():
@@ -335,6 +353,7 @@ func _on_state(msg: Dictionary) -> void:
 		playing = true
 		print("BATTLE_LOADED units=", units.size(), " events=", events.size(), " balance=", str(msg.get("balanceVersion", "?")), " speed=", selected_speed, " allowed_count=", allowed_speeds.size())
 	elif resumed:
+		t_ms = float(server_t)
 		_snap_units(st.get("units", []))
 		_skip_events_through(server_t)
 	if st.get("result") is Dictionary:
@@ -639,6 +658,9 @@ func _spawn_unit(d: Dictionary) -> void:
 
 func _process(delta: float) -> void:
 	_poll_live()
+	if link_note_until > 0 and Time.get_ticks_msec() >= link_note_until and not failed:
+		status_label.hide()
+		link_note_until = 0
 	if not playing or finished:
 		return
 	var cap := float(server_t)

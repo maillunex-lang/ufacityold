@@ -262,6 +262,112 @@ func TestLiveAutoToggle(t *testing.T) {
 	}
 }
 
+// Обрыв: при выключенном авто сервер сам выпускает главную способность,
+// бой не останавливается, а после возвращения снова действует выбор игрока.
+// Без SetForceAuto на detach энергия так и останется полной.
+func TestLiveDisconnectForcesAutoThenRestoresChoice(t *testing.T) {
+	prevTick := liveTickNanos.Load()
+	liveTickNanos.Store(int64(5 * time.Millisecond))
+	t.Cleanup(func() { liveTickNanos.Store(prevTick) })
+	prevNew := newLiveBattle
+	newLiveBattle = func() (*battle.Battle, error) {
+		defs := []battle.UnitDef{
+			{ID: "p", Name: "Лучник", Side: "player", Role: battle.Archer, Slot: 2, MaxHP: 50000, Attack: 40, IntervalMs: 5000},
+			{ID: "e", Name: "Мишень", Side: "enemy", Role: battle.Tank, Slot: 0, MaxHP: 500000, Attack: 1, IntervalMs: 1000, Melee: true},
+		}
+		return battle.New(defs, battle.Config{
+			Energy:         battle.Energy{Max: 30, PerDealt: 1},
+			BalanceVersion: "reconnect",
+		})
+	}
+	t.Cleanup(func() { newLiveBattle = prevNew })
+
+	ts, token := newLiveServer(t)
+	c := dialLive(t, ts, token)
+	if hello := readLive(t, c, 2*time.Second); hello["type"] != "hello" {
+		t.Fatalf("hello: %#v", hello)
+	}
+	if err := c.WriteJSON(map[string]any{"type": "start"}); err != nil {
+		t.Fatal(err)
+	}
+	if state := readLive(t, c, 2*time.Second); state["type"] != "state" {
+		t.Fatalf("старт: %#v", state)
+	}
+	off := false
+	if err := c.WriteJSON(map[string]any{"type": "set_auto", "auto": off}); err != nil {
+		t.Fatal(err)
+	}
+	if ack := readLive(t, c, 2*time.Second); ack["type"] != "auto" || ack["auto"] != false {
+		t.Fatalf("авто: %#v", ack)
+	}
+	var fullAt int
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		m := readLive(t, c, time.Until(deadline))
+		if e, ok := unitEnergy(m, "p"); ok && e == 30 {
+			fullAt = stateT(m)
+			break
+		}
+	}
+	if fullAt == 0 {
+		t.Fatal("без авто энергия не копилась или способность вышла сама")
+	}
+	c.Close()
+	time.Sleep(150 * time.Millisecond)
+
+	c2 := dialLive(t, ts, token)
+	resumed := readLive(t, c2, 2*time.Second)
+	if resumed["type"] != "state" || resumed["resumed"] != true {
+		t.Fatalf("переподключение: %#v", resumed)
+	}
+	if resumed["auto"] != false {
+		t.Fatalf("выбор игрока не сохранился: %#v", resumed["auto"])
+	}
+	if stateT(resumed) <= fullAt {
+		t.Fatalf("во время обрыва бой стоял: t=%d, было %d", stateT(resumed), fullAt)
+	}
+	spent, ok := unitEnergy(resumed, "p")
+	if !ok || spent >= 30 {
+		t.Fatalf("при обрыве полный автомат не потратил энергию: %v t=%d", spent, stateT(resumed))
+	}
+	held := 0
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && held < 2 {
+		m := readLive(t, c2, time.Until(deadline))
+		e, ok := unitEnergy(m, "p")
+		if !ok {
+			continue
+		}
+		if e == 30 {
+			held++
+			continue
+		}
+		if held > 0 {
+			t.Fatalf("после возвращения способность снова вышла сама, энергия %v", e)
+		}
+	}
+	if held < 2 {
+		t.Fatal("после переподключения энергия не удержалась на полной без команды")
+	}
+}
+
+func unitEnergy(m map[string]any, id string) (int, bool) {
+	st, _ := m["state"].(map[string]any)
+	if st == nil {
+		return 0, false
+	}
+	list, _ := st["units"].([]any)
+	for _, raw := range list {
+		u, _ := raw.(map[string]any)
+		if u["id"] != id {
+			continue
+		}
+		n, ok := u["energy"].(float64)
+		return int(n), ok
+	}
+	return 0, false
+}
+
 func TestLiveRejectsOversizedCommand(t *testing.T) {
 	prev := liveTickNanos.Load()
 	liveTickNanos.Store(int64(time.Hour))
