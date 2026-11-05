@@ -83,6 +83,11 @@ func livePingEvery() time.Duration {
 // liveEpoch останавливает тики предыдущих тестов, не трогая игровое время.
 var liveEpoch atomic.Int64
 
+// newLiveBattle создаёт бой. Тест подменяет его, чтобы ошибка конфигурации не терялась.
+var newLiveBattle = func() (*battle.Battle, error) {
+	return battle.New(battle.PrototypeSquads(), battle.Config{Energy: battle.DefaultEnergy, BalanceVersion: battle.BalanceVersion})
+}
+
 func (s *liveSession) runningLocked() bool { return s.finishedAt.IsZero() && !s.replaced }
 
 func (s *liveSession) expiredLocked(now time.Time) bool {
@@ -242,7 +247,7 @@ func (h *liveHub) begin(account int64, c *websocket.Conn) (*liveSession, string)
 	if h.activeLocked() >= maxLiveBattles {
 		return nil, "busy"
 	}
-	b, err := battle.New(battle.PrototypeSquads(), battle.Config{Energy: battle.DefaultEnergy, BalanceVersion: battle.BalanceVersion})
+	b, err := newLiveBattle()
 	if err != nil {
 		return nil, "internal"
 	}
