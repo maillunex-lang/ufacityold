@@ -70,6 +70,10 @@ expect "BATTLE_MOVEMENT_OK moves=[1-9][0-9]* inconsistencies=0" "серверн�
 expect "BATTLE_SKILLS_OK auto1=[1-9][0-9]* auto2=[1-9][0-9]* passives=10 inconsistencies=0" "оба автонавыка и пассивы проиграны без расхождений"
 ! grep -q "SCRIPT ERROR" "$W/out.log" || { echo "ПРОВАЛ: ошибки скриптов"; grep -B1 -A2 "SCRIPT ERROR" "$W/out.log" | head; exit 1; }
 echo "ок: ошибок скриптов нет"
+echo "== 6c. город и кампания"
+LUNEXGAME_SMOKE_CITY=1 LUNEXGAME_CITY_DEMO=1 run; [ "$RC" = 0 ] || { echo "ПРОВАЛ: город, код $RC"; exit 1; }
+expect "CITY_OK gold=0 heroes=2 cleared=0" "город загрузил профиль"
+expect "CAMPAIGN_OK stages=10 open=1" "список кампании загружен"
 echo "== 7. сервер недоступен"
 kill $SRV; wait $SRV 2>/dev/null || true
 run; [ "$RC" = 1 ] || { echo "ПРОВАЛ: ожидался код 1, получен $RC"; exit 1; }
