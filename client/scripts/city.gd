@@ -72,11 +72,28 @@ func _clear_campaign_rows()->void:
 func _heroes()->void:
 	var h:=await _request("/api/home"); if h.is_empty(): content.text="Не удалось загрузить героев"; return
 	_clear_hero_rows(); _clear_campaign_rows()
-	content.text="Герои\nЗолото: %d   Опыт: %d"%[int(h.get("gold",0)),int(h.get("heroXp",0))]
+	var counts:= {}
 	for state in h.get("heroStates",[]):
-		var row:=HBoxContainer.new(); var label:=Label.new(); label.text="\n%s · уровень %d"%[str(state.get("id","герой")),int(state.get("level",1))]; label.add_theme_font_size_override("font_size",26); label.size_flags_horizontal=Control.SIZE_EXPAND_FILL; row.add_child(label)
+		var faction:=_hero_faction(str(state.get("id",""))); counts[faction]=int(counts.get(faction,0))+1
+	content.text="Герои\nЗолото: %d   Опыт: %d\nФракции: %s"%[int(h.get("gold",0)),int(h.get("heroXp",0)),_formation_bonus(counts)]
+	for state in h.get("heroStates",[]):
+		var row:=HBoxContainer.new(); var label:=Label.new(); label.text="\n%s · уровень %d · %s"%[str(state.get("id","герой")),int(state.get("level",1)),_hero_faction_name(str(state.get("id","")))]; label.add_theme_font_size_override("font_size",26); label.size_flags_horizontal=Control.SIZE_EXPAND_FILL; row.add_child(label)
 		var up:=Button.new(); up.text="Улучшить"; up.add_theme_font_size_override("font_size",22); up.pressed.connect(func()->void: _level_up(str(state.get("id","")))); row.add_child(up); base.add_child(row)
 		hero_rows.append(row)
+
+func _hero_faction(id:String)->String:
+	return {"guardian":"dawn", "fighter":"dawn", "archer":"tide", "mage":"grove", "healer":"ember"}.get(id, "unknown")
+
+func _hero_faction_name(id:String)->String:
+	return {"dawn":"Рассвет", "tide":"Прилив", "grove":"Роща", "ember":"Пламя"}.get(_hero_faction(id), "Неизвестная фракция")
+
+func _formation_bonus(counts:Dictionary)->String:
+	var best:=0
+	for value in counts.values(): best=maxi(best,int(value))
+	if best>=5: return "бонус состава +20% атаки и здоровья"
+	if best>=4: return "бонус состава +15% атаки и здоровья"
+	if best>=3: return "бонус состава +10% атаки и здоровья"
+	return "бонус состава не активен"
 
 func _clear_hero_rows()->void:
 	for row in hero_rows:
