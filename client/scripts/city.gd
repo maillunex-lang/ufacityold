@@ -4,8 +4,6 @@ var base: VBoxContainer
 var content: Label
 var afk_button: Button
 var hero_rows: Array[Node] = []
-var campaign_rows: Array[Node] = []
-var campaign_box: VBoxContainer
 var demo := false
 
 func _ready() -> void:
@@ -18,7 +16,6 @@ func _ready() -> void:
 	for item in ["Город","Кампания","Герои","Инвентарь"]:
 		var b:=Button.new(); b.text=item; b.custom_minimum_size=Vector2(0,90); b.size_flags_horizontal=Control.SIZE_EXPAND_FILL; b.add_theme_font_size_override("font_size",28); b.pressed.connect(func()->void: _open(item)); tabs.add_child(b)
 	content=Label.new(); content.autowrap_mode=TextServer.AUTOWRAP_WORD_SMART; content.add_theme_font_size_override("font_size",30); content.add_theme_color_override("font_color",Color("e8d9a0")); base.add_child(content)
-	campaign_box=VBoxContainer.new(); campaign_box.add_theme_constant_override("separation",10); base.add_child(campaign_box)
 	_open("Город")
 	if demo: get_tree().create_timer(1.0).timeout.connect(func()->void: _open("Кампания"))
 
@@ -31,7 +28,6 @@ func _open(item:String)->void:
 func _home(inventory:bool)->void:
 	var h:=await _request("/api/home"); if h.is_empty(): content.text="Не удалось загрузить город"; return
 	_clear_hero_rows()
-	_clear_campaign_rows()
 	content.text="Золото: %d\nОпыт героя: %d\nПройдено этапов: %d\n\n%s"%[int(h.get("gold",0)),int(h.get("heroXp",0)),int(h.get("campaignCleared",0)),"Инвентарь" if inventory else "Выберите раздел ниже."]
 	if afk_button:
 		afk_button.queue_free(); afk_button=null
@@ -48,34 +44,16 @@ func _claim_afk()->void:
 
 func _campaign()->void:
 	var c:=await _request("/api/campaign"); if c.is_empty(): content.text="Не удалось загрузить кампанию"; return
-	_clear_hero_rows(); _clear_campaign_rows()
 	var lines:PackedStringArray=["Кампания"]
-	for s in c.get("stages",[]):
-		var id:=int(s.get("id",0)); var open:=bool(s.get("open",false)); lines.append("%s  %s"%[str(s.get("name","Этап")),"ДОСТУПЕН" if open else "закрыт"])
-		if open:
-			var row:=HBoxContainer.new(); var label:=Label.new(); label.text=str(s.get("name","Этап")); label.add_theme_font_size_override("font_size",26); label.size_flags_horizontal=Control.SIZE_EXPAND_FILL; row.add_child(label)
-			var fight:=Button.new(); fight.text="Сражаться"; fight.custom_minimum_size=Vector2(0,64); fight.add_theme_font_size_override("font_size",22); fight.pressed.connect(func()->void: _fight_stage(id)); row.add_child(fight); campaign_box.add_child(row); campaign_rows.append(row)
+	for s in c.get("stages",[]): lines.append("%s  %s"%[str(s.get("name","Этап")),"ДОСТУПЕН" if bool(s.get("open",false)) else "закрыт"])
 	content.text="\n".join(lines)
 	if OS.get_environment("LUNEXGAME_SMOKE_CITY")=="1":
 		print("CAMPAIGN_OK stages=",c.get("stages",[]).size()," open=",1)
 		get_tree().quit(0)
 
-func _fight_stage(stage:int)->void:
-	var result:=await _post("/api/campaign/%d/fight"%stage)
-	if result.is_empty(): content.text="Не удалось начать бой"; return
-	var granted:=bool(result.get("granted",false)); content.text="Этап %d: %s\nНаграда: +%d золота, +%d опыта"%[stage,"ПОБЕДА" if str(result.get("winner",""))=="player" else "ПОРАЖЕНИЕ",int(result.get("grantedGold",0)),int(result.get("grantedHeroXp",0))]
-	if granted:
-		await get_tree().create_timer(1.5).timeout
-		await _home(false)
-
-func _clear_campaign_rows()->void:
-	for row in campaign_rows:
-		if is_instance_valid(row): row.queue_free()
-	campaign_rows.clear()
-
 func _heroes()->void:
 	var h:=await _request("/api/home"); if h.is_empty(): content.text="Не удалось загрузить героев"; return
-	_clear_hero_rows(); _clear_campaign_rows()
+	_clear_hero_rows()
 	content.text="Герои\nЗолото: %d   Опыт: %d"%[int(h.get("gold",0)),int(h.get("heroXp",0))]
 	for state in h.get("heroStates",[]):
 		var row:=HBoxContainer.new(); var label:=Label.new(); label.text="\n%s · уровень %d"%[str(state.get("id","герой")),int(state.get("level",1))]; label.add_theme_font_size_override("font_size",26); label.size_flags_horizontal=Control.SIZE_EXPAND_FILL; row.add_child(label)
