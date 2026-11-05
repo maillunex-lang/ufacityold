@@ -3,6 +3,7 @@ extends Control
 var base: VBoxContainer
 var content: Label
 var afk_button: Button
+var hero_rows: Array[Node] = []
 var demo := false
 
 func _ready() -> void:
@@ -26,6 +27,7 @@ func _open(item:String)->void:
 
 func _home(inventory:bool)->void:
 	var h:=await _request("/api/home"); if h.is_empty(): content.text="Не удалось загрузить город"; return
+	_clear_hero_rows()
 	content.text="Золото: %d\nОпыт героя: %d\nПройдено этапов: %d\n\n%s"%[int(h.get("gold",0)),int(h.get("heroXp",0)),int(h.get("campaignCleared",0)),"Инвентарь" if inventory else "Выберите раздел ниже."]
 	if afk_button:
 		afk_button.queue_free(); afk_button=null
@@ -51,10 +53,17 @@ func _campaign()->void:
 
 func _heroes()->void:
 	var h:=await _request("/api/home"); if h.is_empty(): content.text="Не удалось загрузить героев"; return
+	_clear_hero_rows()
 	content.text="Герои\nЗолото: %d   Опыт: %d"%[int(h.get("gold",0)),int(h.get("heroXp",0))]
 	for state in h.get("heroStates",[]):
 		var row:=HBoxContainer.new(); var label:=Label.new(); label.text="\n%s · уровень %d"%[str(state.get("id","герой")),int(state.get("level",1))]; label.add_theme_font_size_override("font_size",26); label.size_flags_horizontal=Control.SIZE_EXPAND_FILL; row.add_child(label)
 		var up:=Button.new(); up.text="Улучшить"; up.add_theme_font_size_override("font_size",22); up.pressed.connect(func()->void: _level_up(str(state.get("id","")))); row.add_child(up); base.add_child(row)
+		hero_rows.append(row)
+
+func _clear_hero_rows()->void:
+	for row in hero_rows:
+		if is_instance_valid(row): row.queue_free()
+	hero_rows.clear()
 
 func _level_up(id:String)->void:
 	var result:=await _post("/api/heroes/"+id+"/level"); if result.is_empty(): content.text="Недостаточно золота или опыта"; return
