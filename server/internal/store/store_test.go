@@ -13,8 +13,13 @@ func TestMigrateAndBackup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v, _ := s.SchemaVersion(); v != 3 {
-		t.Fatalf("версия %d", v)
+	// Ожидаемая версия — номер последней встроенной миграции (тест не нужно править при добавлении новых).
+	ms, err := loadMigrations()
+	if err != nil || len(ms) == 0 {
+		t.Fatal(err)
+	}
+	if v, _ := s.SchemaVersion(); v != ms[len(ms)-1].version {
+		t.Fatalf("версия %d, ожидалась %d", v, ms[len(ms)-1].version)
 	}
 	if ents, _ := os.ReadDir(bk); len(ents) != 0 {
 		t.Fatal("для новой БД копия не нужна")
@@ -98,10 +103,24 @@ func TestBackupOfExistingDB(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s0.DB.Exec(`DROP TABLE battles`)
-	s0.DB.Exec(`DROP TABLE sessions`)
-	s0.DB.Exec(`DROP TABLE accounts`)
-	s0.DB.Exec(`DROP TABLE account_progress`)
+	// Сбрасываем ВСЕ таблицы, кроме служебных, — тест не зависит от состава миграций.
+	s0.DB.Exec(`PRAGMA foreign_keys=OFF`)
+	rows, err := s0.DB.Query(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name<>'schema_migrations'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tables []string
+	for rows.Next() {
+		var n string
+		rows.Scan(&n)
+		tables = append(tables, n)
+	}
+	rows.Close()
+	for _, n := range tables {
+		if _, err := s0.DB.Exec(`DROP TABLE "` + n + `"`); err != nil {
+			t.Fatal(err)
+		}
+	}
 	s0.DB.Exec(`DELETE FROM schema_migrations`)
 	s0.Close()
 	s, err := Open(p, bk)
