@@ -3,3 +3,4 @@ class_name Session
 static var base_url: String = ""
 static var token: String = ""
 static var account_id: int = 0
+static var campaign_stage: int = 0
