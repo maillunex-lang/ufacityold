@@ -39,13 +39,6 @@ func validate(defs []UnitDef, cfg Config) error {
 		default:
 			return invalid(d.ID, "неизвестная роль")
 		}
-		if d.Faction != "" {
-			switch d.Faction {
-			case FactionDawn, FactionTide, FactionGrove, FactionEmber:
-			default:
-				return invalid(d.ID, "неизвестная фракция")
-			}
-		}
 		if d.Level < 1 || d.Level > cfg.MaxLevel || d.MaxHP < 1 || d.MaxHP > maxStat || d.Attack < 0 || d.Attack > maxStat ||
 			d.IntervalMs < 1 || d.IntervalMs > maxStat || d.AttackRange < 1 || d.AttackRange > maxStat || d.RunSpeed < 1 || d.RunSpeed > maxStat ||
 			d.Position.X < -maxStat || d.Position.X > maxStat || d.Position.Z < -maxStat || d.Position.Z > maxStat {
