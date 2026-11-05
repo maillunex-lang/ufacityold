@@ -66,11 +66,13 @@ var visual_gap_min: float = 999.0
 var float_volley_n: int = 0
 var float_volley_spread: float = 0.0
 var campaign_stage: int = 0
+var tower_floor: int = 0
 
 
 func _ready() -> void:
 	smoke = OS.get_environment("LUNEXGAME_SMOKE") == "1"
 	campaign_stage = Session.campaign_stage
+	tower_floor = Session.tower_floor
 	if smoke:
 		speed = SMOKE_SPEED
 	if OS.get_environment("LUNEXGAME_BATTLE_SPEED") != "":
@@ -475,8 +477,9 @@ func _reset_battle_view() -> void:
 
 
 func _again() -> void:
-	if campaign_stage > 0:
+	if campaign_stage > 0 or tower_floor > 0:
 		Session.campaign_stage = 0
+		Session.tower_floor = 0
 		get_tree().change_scene_to_file("res://scenes/city.tscn")
 		return
 	if failed or live_ws == null or live_ws.get_ready_state() != WebSocketPeer.STATE_OPEN:
@@ -902,7 +905,7 @@ func _finish() -> void:
 			inconsistencies += 1
 	result_label.text = "ПОБЕДА" if winner == "player" else "ПОРАЖЕНИЕ"
 	result_label.show()
-	again_button.text = "Вернуться в город" if campaign_stage > 0 else "Ещё бой"
+	again_button.text = "Вернуться в город" if campaign_stage > 0 or tower_floor > 0 else "Ещё бой"
 	again_button.show()
 	if smoke:
 		# Порог ниже VISUAL_GAP: несколько проходов могут не дожать кучу до миллиметра.
@@ -914,6 +917,8 @@ func _finish() -> void:
 	await _confirm_saved_result()
 	if campaign_stage > 0 and winner == "player":
 		await _claim_campaign_reward()
+	if tower_floor > 0 and winner == "player":
+		await _claim_tower_reward()
 	if not final_positions.is_empty():
 		print("BATTLE_MOVEMENT_OK moves=%d inconsistencies=%d" % [movement_events, inconsistencies])
 	print("BATTLE_SKILLS_OK auto1=%d auto2=%d passives=%d inconsistencies=%d" % [
@@ -941,6 +946,23 @@ func _claim_campaign_reward() -> void:
 	var parsed: Variant = JSON.parse_string((res[3] as PackedByteArray).get_string_from_utf8())
 	if parsed is Dictionary:
 		status_label.text = "Награда: +%d золота, +%d опыта" % [int(parsed.get("grantedGold", 0)), int(parsed.get("grantedHeroXp", 0))]
+		status_label.show()
+
+func _claim_tower_reward() -> void:
+	var req := HTTPRequest.new()
+	req.timeout = 10.0
+	add_child(req)
+	var hs := PackedStringArray(["Authorization: Bearer " + Session.token, "Content-Type: application/json"])
+	var path := Session.base_url + "/api/tower/%d/fight" % tower_floor
+	if req.request(path, hs, HTTPClient.METHOD_POST, "") != OK:
+		req.queue_free(); status_label.text = "Победа. Награду Башни не удалось получить"; return
+	var res: Array = await req.request_completed
+	req.queue_free()
+	if res[0] != HTTPRequest.RESULT_SUCCESS or int(res[1]) != 200:
+		status_label.text = "Победа. Награду Башни не удалось получить"; return
+	var parsed: Variant = JSON.parse_string((res[3] as PackedByteArray).get_string_from_utf8())
+	if parsed is Dictionary:
+		status_label.text = "Награда Башни: +%d золота, +%d опыта" % [int(parsed.get("grantedGold", 0)), int(parsed.get("grantedHeroXp", 0))]
 		status_label.show()
 
 
