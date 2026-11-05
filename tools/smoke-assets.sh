@@ -65,6 +65,7 @@ echo "== 6b. бой: вход, ресурсы, расчёт на сервере,
 LUNEXGAME_SMOKE_BATTLE=1 run; [ "$RC" = 0 ] || { echo "ПРОВАЛ: код $RC"; tail -20 "$W/out.log"; exit 1; }
 expect "BATTLE_LOADED units=10 .*speed=1 allowed_count=1" "бой получен с серверной скоростью x1"
 expect "BATTLE_SPEED_UI x1_enabled=true x1_selected=true" "кнопка x1 включена и выбрана (JSON-числа приведены к int)"
+expect "BATTLE_AUTO_UI enabled=true" "переключатель полного автомата включён по умолчанию"
 expect "BATTLE_OK winner=player .*inconsistencies=0" "запись проиграна, результат согласован с состоянием"
 expect "BATTLE_MOVEMENT_OK moves=[1-9][0-9]* inconsistencies=0" "серверные перемещения, дальность атак и конечные координаты согласованы с клиентом"
 expect "BATTLE_SKILLS_OK auto1=[1-9][0-9]* auto2=[1-9][0-9]* passives=10 inconsistencies=0" "оба автонавыка и пассивы проиграны без расхождений"

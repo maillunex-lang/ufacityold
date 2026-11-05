@@ -114,6 +114,8 @@ type Battle struct {
 	result          *Result
 	delivered       int
 	manual          map[string]bool
+	playerAuto      bool // главная способность героев игрока сама; враги всегда на автомате
+	forceAuto       bool // обрыв связи: игрок тоже на полном автомате, пока не вернулся
 }
 
 func (s *Battle) outcome() Outcome {

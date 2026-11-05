@@ -231,3 +231,29 @@ func TestLiveGlobalBattleLimit(t *testing.T) {
 		t.Fatalf("предел %d не сработал: %#v", maxLiveBattles, msg)
 	}
 }
+
+func TestLiveAutoToggle(t *testing.T) {
+	prev := liveTickNanos.Load()
+	liveTickNanos.Store(int64(time.Hour))
+	t.Cleanup(func() { liveTickNanos.Store(prev) })
+	ts, token := newLiveServer(t)
+	c := dialLive(t, ts, token)
+	if hello := readLive(t, c, 2*time.Second); hello["type"] != "hello" {
+		t.Fatalf("hello: %#v", hello)
+	}
+	if err := c.WriteJSON(map[string]any{"type": "start"}); err != nil {
+		t.Fatal(err)
+	}
+	state := readLive(t, c, 2*time.Second)
+	if state["auto"] != true {
+		t.Fatalf("по умолчанию автомат включён: %#v", state)
+	}
+	off := false
+	if err := c.WriteJSON(map[string]any{"type": "set_auto", "auto": off}); err != nil {
+		t.Fatal(err)
+	}
+	ack := readLive(t, c, 2*time.Second)
+	if ack["type"] != "auto" || ack["auto"] != false {
+		t.Fatalf("переключатель: %#v", ack)
+	}
+}

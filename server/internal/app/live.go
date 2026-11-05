@@ -13,6 +13,7 @@ import (
 type liveCommand struct {
 	Type   string `json:"type"`
 	UnitID string `json:"unitId"`
+	Auto   *bool  `json:"auto,omitempty"`
 }
 
 type liveSession struct {
@@ -93,6 +94,9 @@ func (s *liveSession) bind(c *websocket.Conn) {
 	s.mu.Lock()
 	old := s.conn
 	s.conn = c
+	if s.battle != nil {
+		s.battle.SetForceAuto(false)
+	}
 	s.mu.Unlock()
 	if old != nil && old != c {
 		_ = old.Close()
@@ -113,9 +117,12 @@ func (s *liveSession) stopTick() {
 	s.writeMu.Unlock()
 }
 
-func (s *liveSession) snapshotLocked() map[string]any {
+func (s *liveSession) snapshotLocked(resumed bool) map[string]any {
 	state := s.battle.Snapshot()
-	return map[string]any{"type": "state", "state": state, "balanceVersion": state.Balance, "resumed": false}
+	return map[string]any{
+		"type": "state", "state": state, "balanceVersion": state.Balance,
+		"resumed": resumed, "auto": s.battle.PlayerAuto(),
+	}
 }
 
 func (h *liveHub) ensureJanitor() {
@@ -231,6 +238,9 @@ func (h *liveHub) detach(account int64, c *websocket.Conn) {
 	s.mu.Lock()
 	if s.conn == c {
 		s.conn = nil
+		if s.battle != nil && !s.battle.Done() {
+			s.battle.SetForceAuto(true)
+		}
 	}
 	s.mu.Unlock()
 }
@@ -245,8 +255,7 @@ func (h *liveHub) serve(w http.ResponseWriter, r *http.Request, account int64) {
 	if s := h.usable(account); s != nil {
 		s.bind(c)
 		s.mu.Lock()
-		msg := s.snapshotLocked()
-		msg["resumed"] = true
+		msg := s.snapshotLocked(true)
 		s.mu.Unlock()
 		_ = s.emit(c, msg)
 	} else {
@@ -264,8 +273,7 @@ func (h *liveHub) serve(w http.ResponseWriter, r *http.Request, account int64) {
 			if code == "already_running" && s != nil {
 				_ = writeLive(c, map[string]any{"type": "error", "error": code})
 				s.mu.Lock()
-				msg := s.snapshotLocked()
-				msg["resumed"] = true
+				msg := s.snapshotLocked(true)
 				s.mu.Unlock()
 				_ = s.emit(c, msg)
 				continue
@@ -275,10 +283,21 @@ func (h *liveHub) serve(w http.ResponseWriter, r *http.Request, account int64) {
 				continue
 			}
 			s.mu.Lock()
-			msg := s.snapshotLocked()
+			msg := s.snapshotLocked(false)
 			s.mu.Unlock()
 			_ = s.emit(c, msg)
 			go s.tick()
+		case "set_auto":
+			s := h.usable(account)
+			if s == nil || cmd.Auto == nil {
+				_ = writeLive(c, map[string]any{"type": "error", "error": "no_battle"})
+				continue
+			}
+			s.mu.Lock()
+			s.battle.SetPlayerAuto(*cmd.Auto)
+			on := s.battle.PlayerAuto()
+			s.mu.Unlock()
+			_ = s.emit(c, map[string]any{"type": "auto", "auto": on})
 		case "main_skill":
 			s := h.usable(account)
 			if s == nil {
