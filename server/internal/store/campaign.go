@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"lunexgame/internal/campaign"
+	"time"
 )
 
 func (s *Store) Home(accountID int64) (campaign.Home, error) {
@@ -30,6 +31,49 @@ func (s *Store) Home(accountID int64) (campaign.Home, error) {
 		h.HeroStates = append(h.HeroStates, campaign.HeroState{ID: heroes, Level: level, XP: xp})
 	}
 	return h, rows.Err()
+}
+
+const afkCapSeconds int64 = 12 * 60 * 60
+const afkGoldPerHour int64 = 10
+
+func (s *Store) ClaimAFK(accountID int64, now time.Time) (int, int64, error) {
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return 0, 0, err
+	}
+	defer tx.Rollback()
+	var last int64
+	if err = tx.QueryRow(`SELECT afk_last_claim FROM account_progress WHERE account_id=?`, accountID).Scan(&last); err == sql.ErrNoRows {
+		return 0, 0, ErrNotFound
+	}
+	if err != nil {
+		return 0, 0, err
+	}
+	current := now.Unix()
+	if last == 0 {
+		if _, err = tx.Exec(`UPDATE account_progress SET afk_last_claim=? WHERE account_id=?`, current, accountID); err != nil {
+			return 0, 0, err
+		}
+		if err = tx.Commit(); err != nil {
+			return 0, 0, err
+		}
+		return 0, 0, nil
+	}
+	if current < last {
+		current = last
+	}
+	elapsed := current - last
+	if elapsed > afkCapSeconds {
+		elapsed = afkCapSeconds
+	}
+	reward := int(elapsed * afkGoldPerHour / 3600)
+	if _, err = tx.Exec(`UPDATE account_progress SET afk_last_claim=?,gold=gold+? WHERE account_id=?`, current, reward, accountID); err != nil {
+		return 0, 0, err
+	}
+	if err = tx.Commit(); err != nil {
+		return 0, 0, err
+	}
+	return reward, elapsed, nil
 }
 
 func (s *Store) Campaign(accountID int64) ([]campaign.Stage, error) {

@@ -4,6 +4,7 @@ import (
 	"lunexgame/internal/campaign"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestCampaignProgressAndOneTimeReward(t *testing.T) {
@@ -41,5 +42,32 @@ func TestCampaignProgressAndOneTimeReward(t *testing.T) {
 	}
 	if _, _, _, err = s.LevelUpHero(id, "unknown"); err != ErrNotFound {
 		t.Fatalf("unknown hero: %v", err)
+	}
+}
+
+func TestAFKClaimIsCappedAndRepeatSafe(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "afk.db"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	id, _, err := s.CreateGuest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Unix(100000, 0)
+	if gold, elapsed, err := s.ClaimAFK(id, base); err != nil || gold != 0 || elapsed != 0 {
+		t.Fatalf("init: %d %d %v", gold, elapsed, err)
+	}
+	if _, err := s.DB.Exec(`UPDATE account_progress SET afk_last_claim=? WHERE account_id=?`, base.Unix()-24*60*60, id); err != nil {
+		t.Fatal(err)
+	}
+	gold, elapsed, err := s.ClaimAFK(id, base)
+	if err != nil || gold != 120 || elapsed != 12*60*60 {
+		t.Fatalf("cap: %d %d %v", gold, elapsed, err)
+	}
+	gold, elapsed, err = s.ClaimAFK(id, base)
+	if err != nil || gold != 0 || elapsed != 0 {
+		t.Fatalf("repeat: %d %d %v", gold, elapsed, err)
 	}
 }
