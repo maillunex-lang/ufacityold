@@ -3,9 +3,10 @@ package battle
 // Config закрепляется при создании боя. Изменение исходных определений/версии
 // после New действует только на следующий бой; соединение WebSocket здесь не создаётся.
 type Config struct {
-	Energy         Energy
-	BalanceVersion string
-	MaxLevel       int // 0 — стартовый предел 100
+	Energy          Energy
+	BalanceVersion  string
+	MaxLevel        int // 0 — стартовый предел 100
+	MinHeroDistance int // минимальная дистанция живых героев, в тысячных долях единицы
 }
 
 type UnitState struct {
@@ -39,7 +40,10 @@ func New(defs []UnitDef, cfg Config) (*Battle, error) {
 	if err := validate(defs, cfg); err != nil {
 		return nil, err
 	}
-	s := &Battle{cfg: cfg.Energy, touched: map[string]bool{}, balance: cfg.BalanceVersion}
+	if cfg.MinHeroDistance == 0 {
+		cfg.MinHeroDistance = 600
+	}
+	s := &Battle{cfg: cfg.Energy, minHeroDistance: cfg.MinHeroDistance, touched: map[string]bool{}, balance: cfg.BalanceVersion}
 	for i := range defs {
 		d := &defs[i]
 		d.PassiveActive = false // входной флаг не авторитетен

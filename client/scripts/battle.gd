@@ -39,6 +39,7 @@ var portrait_box: HBoxContainer
 var hud: MarginContainer
 var speed_buttons: Dictionary = {}
 var allowed_speeds: Array = [1]
+var selected_speed: int = 1
 
 
 func _ready() -> void:
@@ -128,10 +129,12 @@ func _build_ui() -> void:
 		button.text = "x%d" % value
 		button.custom_minimum_size = Vector2(150, 80)
 		button.add_theme_font_size_override("font_size", 34)
+		_style_speed_button(button, value, false, false)
 		button.pressed.connect(func() -> void: _set_battle_speed(value))
 		speed_row.add_child(button)
 		speed_buttons[value] = button
 	msg.add_child(speed_row)
+	msg.add_child(_ui_label("x2 после обучения, x4 с VIP 2", 22, Color("a8c8bd")))
 	var spacer := Control.new()
 	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -222,13 +225,26 @@ func _load_battle() -> void:
 
 func _apply_playback(payload: Dictionary) -> void:
 	var server_speed := int(payload.get("speed", 1))
+	selected_speed = server_speed
 	allowed_speeds = payload.get("allowedSpeeds", [1])
 	for value in [1, 2, 4]:
 		var button: Button = speed_buttons.get(value)
 		if button:
 			button.disabled = not allowed_speeds.has(value)
+			_style_speed_button(button, value, allowed_speeds.has(value), value == selected_speed)
 	if not smoke and OS.get_environment("LUNEXGAME_BATTLE_SPEED") == "":
 		speed = float(server_speed)
+
+func _style_speed_button(button: Button, value: int, allowed: bool, selected: bool) -> void:
+	var bg := StyleBoxFlat.new()
+	bg.bg_color = Color("294d44") if allowed else Color("172b28")
+	bg.border_color = Color("e8d9a0") if selected else Color("35685c")
+	bg.set_border_width_all(5 if selected else 2)
+	bg.corner_radius_top_left = 12; bg.corner_radius_top_right = 12
+	bg.corner_radius_bottom_left = 12; bg.corner_radius_bottom_right = 12
+	button.add_theme_stylebox_override("normal", bg)
+	button.add_theme_color_override("font_color", Color("fff4bd") if allowed else Color("71877f"))
+	button.add_theme_color_override("font_hover_color", Color.WHITE)
 
 
 func _set_battle_speed(value: int) -> void:
@@ -297,9 +313,10 @@ func _spawn_unit(d: Dictionary) -> void:
 	var name_l := Label3D.new()
 	name_l.text = str(d["name"])
 	name_l.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	name_l.pixel_size = 0.006
-	name_l.font_size = 48
-	name_l.position = Vector3(0, 2.55, 0)
+	name_l.pixel_size = 0.004
+	name_l.font_size = 30
+	name_l.position = Vector3(0, 2.75 + float(int(d["slot"]) % 2) * 0.22, 0)
+	name_l.visible = false # в бою роль и цвет читаются по модели; числа и полосы не перекрываются именами
 	name_l.modulate = Color("e8d9a0") if side == "player" else Color("e0a0a0")
 	n.add_child(name_l)
 	var bg := MeshInstance3D.new()
@@ -309,7 +326,7 @@ func _spawn_unit(d: Dictionary) -> void:
 	var bgmat := StandardMaterial3D.new()
 	bgmat.albedo_color = Color("221111")
 	bg.material_override = bgmat
-	bg.position = Vector3(0, 2.25, 0)
+	bg.position = Vector3(0, 2.28, 0)
 	n.add_child(bg)
 	var fill := MeshInstance3D.new()
 	var fm := BoxMesh.new()
@@ -318,7 +335,7 @@ func _spawn_unit(d: Dictionary) -> void:
 	var fmat := StandardMaterial3D.new()
 	fmat.albedo_color = Color("3fe0c5") if side == "player" else Color("d9534f")
 	fill.material_override = fmat
-	fill.position = Vector3(0, 2.25, 0.01)
+	fill.position = Vector3(0, 2.28, 0.01)
 	n.add_child(fill)
 	units[id] = {
 		"def": d, "node": n, "mat": mat, "fill": fill, "home": n.position,

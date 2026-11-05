@@ -124,13 +124,21 @@ func (s *Battle) moveUnits() {
 		if u.target.target == u && inRange(u, u.target) {
 			continue
 		}
-		offset := approachOffsets[u.approach]
-		if u.Side == "enemy" {
-			offset.X = -offset.X
+		goal := s.approachGoal(u, u.target, u.approach)
+		for slot := 0; slot < len(approachOffsets); slot++ {
+			candidate := s.approachGoal(u, u.target, slot)
+			clear := true
+			for j := 0; j < i; j++ {
+				if s.units[j].hp > 0 && distance(candidate, next[j]) < float64(s.minHeroDistance) {
+					clear = false
+					break
+				}
+			}
+			if clear {
+				u.approach, goal = slot, candidate
+				break
+			}
 		}
-		// Радиус немного меньше дальности, чтобы округление не оставляло героя вне зоны атаки.
-		radius := float64(u.AttackRange) * 0.9
-		goal := Position{u.target.pos.X + int(float64(offset.X)*radius/1000), u.target.pos.Z + int(float64(offset.Z)*radius/1000)}
 		dist := distance(u.pos, goal)
 		step := float64(u.RunSpeed)*TickMs/1000 + u.moveCredit
 		if dist <= step {
@@ -151,5 +159,61 @@ func (s *Battle) moveUnits() {
 		s.events = append(s.events, Event{T: s.t - TickMs, Type: "move", Src: u.ID,
 			Move: &Movement{From: u.pos, To: next[i], DurationMs: TickMs, Target: u.target.ID}})
 		u.pos = next[i]
+	}
+}
+
+func (s *Battle) approachGoal(u, target *unit, slot int) Position {
+	offset := approachOffsets[slot%len(approachOffsets)]
+	if u.Side == "enemy" {
+		offset.X = -offset.X
+	}
+	radius := float64(u.AttackRange) * 0.9
+	return Position{target.pos.X + int(float64(offset.X)*radius/1000), target.pos.Z + int(float64(offset.Z)*radius/1000)}
+}
+
+// separate детерминированно раздвигает живых героев. Порядок входного отряда
+// задаёт приоритет: более поздний герой сдвигается от уже размещённых.
+func (s *Battle) separate(next []Position) {
+	min := float64(s.minHeroDistance)
+	for i, a := range s.units {
+		if a.hp <= 0 {
+			continue
+		}
+		for j := i + 1; j < len(s.units); j++ {
+			b := s.units[j]
+			if b.hp <= 0 {
+				continue
+			}
+			dx, dz := float64(next[j].X-next[i].X), float64(next[j].Z-next[i].Z)
+			d := math.Hypot(dx, dz)
+			if d >= min {
+				continue
+			}
+			if d < 0.001 {
+				dx, dz = float64((j-i)%2*2-1), 0
+				d = 1
+			}
+			push := (min - d) / d
+			budget := float64(b.RunSpeed)*TickMs/1000 + b.moveCredit - distance(b.pos, next[j])
+			if budget < 0 {
+				budget = 0
+			}
+			if push > budget {
+				push = budget
+			}
+			candidate := Position{next[j].X + int(dx*push), next[j].Z + int(dz*push)}
+			fullBudget := float64(b.RunSpeed)*TickMs/1000 + b.moveCredit
+			if moved := distance(b.pos, candidate); moved > fullBudget && moved > 0 {
+				ratio := fullBudget / moved
+				candidate = Position{b.pos.X + int(float64(candidate.X-b.pos.X)*ratio), b.pos.Z + int(float64(candidate.Z-b.pos.Z)*ratio)}
+			}
+			if b.target != nil {
+				max := float64(b.AttackRange) * 0.95
+				if distance(candidate, b.target.pos) > max {
+					continue
+				}
+			}
+			next[j] = candidate
+		}
 	}
 }
