@@ -211,6 +211,7 @@ expect "BATTLE_LIVE_RESUME resumed=true" "после обрыва клиент �
 expect "BATTLE_OK winner=player .*inconsistencies=0" "живой бой доигран, результат согласован с состоянием"
 expect "BATTLE_MOVEMENT_OK moves=[1-9][0-9]* inconsistencies=0" "серверные перемещения, дальность атак и конечные координаты согласованы с клиентом"
 expect "BATTLE_SKILLS_OK auto1=[1-9][0-9]* auto2=[1-9][0-9]* passives=10 inconsistencies=0" "оба автонавыка и пассивы проиграны без расхождений"
+expect "BATTLE_VISUAL_OK gap=1\.[2-9][0-9]* float_n=[3-9][0-9]* float_spread=(0\.[5-9][0-9]*|[1-9][0-9]*\.[0-9]+)" "модели не слипаются в центре, числа залпа разнесены"
 ! grep -q "SCRIPT ERROR" "$W/out.log" || { echo "ПРОВАЛ: ошибки скриптов"; grep -B1 -A2 "SCRIPT ERROR" "$W/out.log" | head; exit 1; }
 echo "ок: ошибок скриптов нет"
 echo "== 7. сервер недоступен"

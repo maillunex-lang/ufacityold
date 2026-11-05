@@ -12,6 +12,7 @@ const BACK_X := 3.5
 const FRONT_Z := [-1.6, 1.6]
 const BACK_Z := [-3.2, 0.0, 3.2]
 const SMOKE_SPEED := 40.0
+const VISUAL_GAP := 1.55 # шире капсулы (0.84) и полоски HP (1.2), иначе центр читается как одна куча
 
 var speed: float = 1.0
 var smoke: bool = false
@@ -57,6 +58,10 @@ var command_reported: bool = false
 var connected_reported: bool = false
 var tick_reported: bool = false
 var start_sent: bool = false
+var frame_labels: Array = []
+var visual_gap_min: float = 999.0
+var float_volley_n: int = 0
+var float_volley_spread: float = 0.0
 
 
 func _ready() -> void:
@@ -644,10 +649,15 @@ func _process(delta: float) -> void:
 	if cap - t_ms > 250.0:
 		t_ms = cap
 	timer_label.text = "%d:%02d / 1:30" % [int(t_ms / 60000), int(fmod(t_ms / 1000.0, 60.0))]
+	frame_labels.clear()
+	for id in units:
+		(units[id]["node"] as Node3D).set_meta("frame_floats", 0)
 	while idx < events.size() and float(events[idx]["t"]) <= t_ms:
 		_apply(events[idx])
 		idx += 1
 	_advance_positions(t_ms)
+	_separate_visuals()
+	_measure_visuals()
 	if live_done and idx >= events.size() and t_ms >= float(int(result.get("durationMs", 0))):
 		_finish()
 
@@ -820,14 +830,21 @@ func _float_text(node: Node3D, text: String, color: Color) -> void:
 	var l := Label3D.new()
 	l.text = text
 	l.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	l.pixel_size = 0.008
-	l.font_size = 64
+	l.pixel_size = 0.007
+	l.font_size = 48
+	l.outline_size = 18
+	l.outline_modulate = Color(0, 0, 0, 0.9)
 	l.modulate = color
-	l.position = node.position + Vector3(0, 2.7, 0.3)
-	add_child(l)
+	# Столбик над своей моделью. Повтор слота в том же кадре запрещён:
+	# догон сервера может принести больше четырёх чисел одному герою.
+	var n := int(node.get_meta("frame_floats", 0))
+	node.set_meta("frame_floats", n + 1)
+	l.position = Vector3(0.0, 2.25 + 0.58 * float(n), 0.35)
+	node.add_child(l)
+	frame_labels.append(l)
 	var tw := _tween()
-	tw.tween_property(l, "position:y", l.position.y + 1.0, 0.7)
-	tw.parallel().tween_property(l, "modulate:a", 0.0, 0.7)
+	tw.tween_property(l, "position:y", l.position.y + 0.8, 0.65)
+	tw.parallel().tween_property(l, "modulate:a", 0.0, 0.65)
 	tw.tween_callback(l.queue_free)
 
 
@@ -858,6 +875,13 @@ func _finish() -> void:
 	result_label.text = "ПОБЕДА" if winner == "player" else "ПОРАЖЕНИЕ"
 	result_label.show()
 	again_button.show()
+	if smoke:
+		# Порог ниже VISUAL_GAP: несколько проходов могут не дожать кучу до миллиметра.
+		if visual_gap_min < 1.20:
+			inconsistencies += 1
+		if float_volley_n < 3 or float_volley_spread < 0.45:
+			inconsistencies += 1
+		print("BATTLE_VISUAL_OK gap=%.3f float_n=%d float_spread=%.2f" % [visual_gap_min, float_volley_n, float_volley_spread])
 	await _confirm_saved_result()
 	if not final_positions.is_empty():
 		print("BATTLE_MOVEMENT_OK moves=%d inconsistencies=%d" % [movement_events, inconsistencies])
@@ -898,3 +922,76 @@ func _confirm_saved_result() -> void:
 	var saved: Variant = (battle as Dictionary).get("result", {})
 	if not (saved is Dictionary) or str((saved as Dictionary).get("winner", "")) != str(result.get("winner", "")):
 		inconsistencies += 1
+
+func _separate_visuals() -> void:
+	# Логические координаты сервера не трогаем: от них зависит сверка дальности.
+	# В расчёте ближние делят одну точку подхода (проба: дистанция 161 при диаметре 840).
+	# Здесь только рисунок: несколько проходов разводят модели, не меняя словарь pos.
+	var ids: Array = units.keys()
+	var shift := {}
+	for id in ids:
+		shift[id] = Vector3.ZERO
+	for _pass in range(12):
+		var pushed := false
+		for i in range(ids.size()):
+			var ia: String = ids[i]
+			if units[ia]["dead"]:
+				continue
+			for j in range(i + 1, ids.size()):
+				var ib: String = ids[j]
+				if units[ib]["dead"]:
+					continue
+				var a: Vector3 = units[ia]["pos"] + shift[ia]
+				var b: Vector3 = units[ib]["pos"] + shift[ib]
+				var delta := b - a
+				delta.y = 0.0
+				var dist := delta.length()
+				if dist >= VISUAL_GAP:
+					continue
+				pushed = true
+				var dir := Vector3(1, 0, 0) if dist < 0.001 else delta / dist
+				var push := (VISUAL_GAP - dist) * 0.5
+				shift[ia] = shift[ia] - dir * push
+				shift[ib] = shift[ib] + dir * push
+		if not pushed:
+			break
+	for id in ids:
+		var n: Node3D = units[id]["node"]
+		if is_instance_valid(n):
+			n.position = units[id]["pos"] + shift[id]
+
+
+func _measure_visuals() -> void:
+	if not smoke:
+		return
+	var ids: Array = units.keys()
+	for i in range(ids.size()):
+		if units[ids[i]]["dead"]:
+			continue
+		for j in range(i + 1, ids.size()):
+			if units[ids[j]]["dead"]:
+				continue
+			var delta: Vector3 = units[ids[j]]["node"].position - units[ids[i]]["node"].position
+			delta.y = 0.0
+			var dist := delta.length()
+			if dist < visual_gap_min:
+				visual_gap_min = dist
+	if frame_labels.size() >= 3:
+		var spread := 999.0
+		for i in range(frame_labels.size()):
+			var la: Node3D = frame_labels[i]
+			if not is_instance_valid(la):
+				continue
+			for j in range(i + 1, frame_labels.size()):
+				var lb: Node3D = frame_labels[j]
+				if not is_instance_valid(lb):
+					continue
+				# global_position в том же кадре ещё не включает сдвиг родителя.
+				var wa := (la.get_parent() as Node3D).position + la.position
+				var wb := (lb.get_parent() as Node3D).position + lb.position
+				var d := wa.distance_to(wb)
+				if d < spread:
+					spread = d
+		if frame_labels.size() > float_volley_n:
+			float_volley_n = frame_labels.size()
+			float_volley_spread = spread
