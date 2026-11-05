@@ -2,6 +2,7 @@ extends Control
 
 var base: VBoxContainer
 var content: Label
+var afk_button: Button
 var demo := false
 
 func _ready() -> void:
@@ -26,7 +27,18 @@ func _open(item:String)->void:
 func _home(inventory:bool)->void:
 	var h:=await _request("/api/home"); if h.is_empty(): content.text="Не удалось загрузить город"; return
 	content.text="Золото: %d\nОпыт героя: %d\nПройдено этапов: %d\n\n%s"%[int(h.get("gold",0)),int(h.get("heroXp",0)),int(h.get("campaignCleared",0)),"Инвентарь" if inventory else "Выберите раздел ниже."]
+	if afk_button:
+		afk_button.queue_free(); afk_button=null
+	if inventory:
+		afk_button=Button.new(); afk_button.text="Забрать AFK-награду"; afk_button.custom_minimum_size=Vector2(0,90); afk_button.add_theme_font_size_override("font_size",28); afk_button.pressed.connect(_claim_afk); base.add_child(afk_button)
 	if OS.get_environment("LUNEXGAME_SMOKE_CITY")=="1": print("CITY_OK gold=",int(h.get("gold",0))," heroes=",h.get("heroes",[]).size()," cleared=",int(h.get("campaignCleared",0)))
+
+func _claim_afk()->void:
+	var result:=await _post("/api/afk/claim")
+	if result.is_empty(): content.text="Не удалось получить AFK-награду"; return
+	content.text="AFK-награда получена: +%d золота\nНакоплено секунд: %d"%[int(result.get("grantedGold",0)),int(result.get("elapsedSeconds",0))]
+	await get_tree().create_timer(1.0).timeout
+	await _home(true)
 
 func _campaign()->void:
 	var c:=await _request("/api/campaign"); if c.is_empty(): content.text="Не удалось загрузить кампанию"; return
