@@ -52,6 +52,8 @@ var connect_msec: int = 0
 var reconnects: int = 0
 var saw_tick: bool = false
 var smoke_dropped: bool = false
+var smoke_restart: bool = false
+var smoke_restart_requested: bool = false
 var resume_seen: bool = false
 var command_sent: bool = false
 var command_reported: bool = false
@@ -72,6 +74,7 @@ var force_new_battle: bool = false
 
 func _ready() -> void:
 	smoke = OS.get_environment("LUNEXGAME_SMOKE") == "1"
+	smoke_restart = OS.get_environment("LUNEXGAME_SMOKE_RESTART") == "1"
 	campaign_stage = Session.campaign_stage
 	tower_floor = Session.tower_floor
 	force_new_battle = Session.force_new_battle
@@ -469,6 +472,7 @@ func _reset_battle_view() -> void:
 	server_t = 0
 	playing = false
 	finished = false
+	failed = false
 	spawned = false
 	live_done = false
 	inconsistencies = 0
@@ -481,6 +485,7 @@ func _reset_battle_view() -> void:
 	saw_tick = false
 	command_sent = false
 	command_reported = false
+	battle_id = ""
 
 
 func _again() -> void:
@@ -489,9 +494,20 @@ func _again() -> void:
 		Session.tower_floor = 0
 		get_tree().change_scene_to_file("res://scenes/city.tscn")
 		return
-	if failed or live_ws == null or live_ws.get_ready_state() != WebSocketPeer.STATE_OPEN:
-		get_tree().reload_current_scene()
+	_start_fresh_battle()
+
+
+func _start_fresh_battle() -> void:
+	# После результата _process больше не опрашивает WebSocket. Сбрасываем экран
+	# до отправки start, чтобы новый state не смешивался с прошлым боем.
+	_reset_battle_view()
+	force_new_battle = true
+	start_sent = false
+	if live_ws == null or live_ws.get_ready_state() != WebSocketPeer.STATE_OPEN:
+		_connect_live()
 		return
+	force_new_battle = false
+	start_sent = true
 	live_ws.send_text(JSON.stringify({"type": "start"}))
 
 
@@ -930,6 +946,13 @@ func _finish() -> void:
 		print("BATTLE_MOVEMENT_OK moves=%d inconsistencies=%d" % [movement_events, inconsistencies])
 	print("BATTLE_SKILLS_OK auto1=%d auto2=%d passives=%d inconsistencies=%d" % [
 		auto_skill_events[0], auto_skill_events[1], passive_events, inconsistencies])
+	if smoke_restart and not smoke_restart_requested:
+		smoke_restart_requested = true
+		print("BATTLE_RESTART_REQUESTED")
+		_start_fresh_battle()
+		return
+	if smoke_restart:
+		print("BATTLE_RESTART_OK")
 	print("BATTLE_OK winner=%s reason=%s durationMs=%d events=%d inconsistencies=%d" % [
 		winner, str(result["reason"]), int(result["durationMs"]), events.size(), inconsistencies])
 	if smoke:

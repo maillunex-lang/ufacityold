@@ -216,6 +216,12 @@ expect "BATTLE_SKILLS_OK auto1=[1-9][0-9]* auto2=[1-9][0-9]* passives=10 inconsi
 expect "BATTLE_VISUAL_OK gap=1\.[2-9][0-9]* float_n=[3-9][0-9]* float_spread=(0\.[5-9][0-9]*|[1-9][0-9]*\.[0-9]+)" "модели не слипаются в центре, числа залпа разнесены"
 ! grep -q "SCRIPT ERROR" "$W/out.log" || { echo "ПРОВАЛ: ошибки скриптов"; grep -B1 -A2 "SCRIPT ERROR" "$W/out.log" | head; exit 1; }
 echo "ок: ошибок скриптов нет"
+echo "== 6d. новый бой после завершения предыдущего"
+LUNEXGAME_SMOKE_BATTLE=1 LUNEXGAME_SMOKE_RESTART=1 run; [ "$RC" = 0 ] || { echo "ПРОВАЛ: повторный бой, код $RC"; tail -30 "$W/out.log"; exit 1; }
+expect "BATTLE_RESTART_REQUESTED" "клиент запросил новый бой после результата"
+expect "BATTLE_RESTART_OK" "клиент начал новый бой без старого результата"
+! grep -q "SCRIPT ERROR" "$W/out.log" || { echo "ПРОВАЛ: ошибки скриптов при повторном бое"; grep -B1 -A2 "SCRIPT ERROR" "$W/out.log" | head; exit 1; }
+echo "ок: повторный бой начат чисто"
 echo "== 6c. город и кампания"
 LUNEXGAME_SMOKE_CITY=1 LUNEXGAME_CITY_DEMO=1 run; [ "$RC" = 0 ] || { echo "ПРОВАЛ: город, код $RC"; exit 1; }
 expect "CITY_OK gold=0 heroes=2 cleared=0" "город загрузил профиль"

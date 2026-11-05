@@ -58,7 +58,9 @@ func _build_ui() -> void:
 	battle_button.custom_minimum_size = Vector2(500, 140)
 	battle_button.add_theme_font_size_override("font_size", 56)
 	battle_button.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	battle_button.pressed.connect(func() -> void: get_tree().change_scene_to_file("res://scenes/battle.tscn"))
+	battle_button.pressed.connect(func() -> void:
+		Session.force_new_battle = true
+		get_tree().change_scene_to_file("res://scenes/battle.tscn"))
 	battle_button.hide()
 	box.add_child(battle_button)
 	retry_button = Button.new()
@@ -119,6 +121,7 @@ func _run() -> void:
 		return
 	if smoke:
 		if OS.get_environment("LUNEXGAME_SMOKE_BATTLE") == "1":
+			Session.force_new_battle = true
 			get_tree().change_scene_to_file("res://scenes/battle.tscn")
 		elif OS.get_environment("LUNEXGAME_SMOKE_CITY") == "1":
 			get_tree().change_scene_to_file("res://scenes/city.tscn")
