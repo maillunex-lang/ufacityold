@@ -40,6 +40,8 @@ var hud: MarginContainer
 var speed_buttons: Dictionary = {}
 var allowed_speeds: Array = [1]
 var selected_speed: int = 1
+var auto_on: bool = true
+var auto_button: Button
 
 
 func _ready() -> void:
@@ -134,6 +136,13 @@ func _build_ui() -> void:
 		speed_row.add_child(button)
 		speed_buttons[value] = button
 	msg.add_child(speed_row)
+	auto_button = Button.new()
+	auto_button.custom_minimum_size = Vector2(280, 80)
+	auto_button.add_theme_font_size_override("font_size", 32)
+	auto_button.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	auto_button.pressed.connect(_toggle_auto)
+	_style_auto_button()
+	msg.add_child(auto_button)
 	msg.add_child(_ui_label("x2 после обучения, x4 с VIP 2", 22, Color("a8c8bd")))
 	var spacer := Control.new()
 	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -253,6 +262,29 @@ func _log_speed_ui() -> void:
 	var enabled := x1 != null and not x1.disabled
 	var selected := enabled and selected_speed == 1
 	print("BATTLE_SPEED_UI x1_enabled=%s x1_selected=%s" % [str(enabled).to_lower(), str(selected).to_lower()])
+	print("BATTLE_AUTO_UI enabled=%s" % str(auto_on).to_lower())
+
+func _toggle_auto() -> void:
+	auto_on = not auto_on
+	_style_auto_button()
+	# Запись HTTP уже посчитана полным автоматом. Команда set_auto уйдёт в живой бой (D7).
+	print("BATTLE_AUTO_UI enabled=%s" % str(auto_on).to_lower())
+
+func _style_auto_button() -> void:
+	if auto_button == null:
+		return
+	auto_button.text = "Авто: вкл" if auto_on else "Авто: выкл"
+	var bg := StyleBoxFlat.new()
+	bg.bg_color = Color("294d44") if auto_on else Color("172b28")
+	bg.border_color = Color("e8d9a0") if auto_on else Color("35685c")
+	bg.set_border_width_all(5 if auto_on else 2)
+	bg.corner_radius_top_left = 12
+	bg.corner_radius_top_right = 12
+	bg.corner_radius_bottom_left = 12
+	bg.corner_radius_bottom_right = 12
+	for state_name in ["normal", "hover", "pressed", "disabled", "focus"]:
+		auto_button.add_theme_stylebox_override(state_name, bg)
+	auto_button.add_theme_color_override("font_color", Color("fff4bd") if auto_on else Color("71877f"))
 
 func _style_speed_button(button: Button, value: int, allowed: bool, selected: bool) -> void:
 	var bg := StyleBoxFlat.new()

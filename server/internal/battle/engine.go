@@ -43,7 +43,7 @@ func New(defs []UnitDef, cfg Config) (*Battle, error) {
 	if cfg.MinHeroDistance == 0 {
 		cfg.MinHeroDistance = 600
 	}
-	s := &Battle{cfg: cfg.Energy, minHeroDistance: cfg.MinHeroDistance, touched: map[string]bool{}, manual: map[string]bool{}, balance: cfg.BalanceVersion}
+	s := &Battle{cfg: cfg.Energy, minHeroDistance: cfg.MinHeroDistance, touched: map[string]bool{}, manual: map[string]bool{}, balance: cfg.BalanceVersion, playerAuto: true}
 	for i := range defs {
 		d := &defs[i]
 		d.PassiveActive = false // входной флаг не авторитетен
@@ -83,6 +83,25 @@ func Run(defs []UnitDef, cfg Energy) (Outcome, error) {
 
 func (s *Battle) Done() bool { return s.result != nil }
 
+func (s *Battle) SetPlayerAuto(on bool) { s.playerAuto = on }
+func (s *Battle) PlayerAuto() bool      { return s.playerAuto }
+func (s *Battle) SetForceAuto(on bool)  { s.forceAuto = on }
+
+// wantsMainSkill: враги всегда тратят полную энергию сами. Герои игрока — только
+// в полном автомате, по команде или пока связь оборвана (сервер продолжает бой).
+func (s *Battle) wantsMainSkill(u *unit) bool {
+	if s.manual[u.ID] {
+		return true
+	}
+	if u.energy < s.cfg.Max {
+		return false
+	}
+	if u.Side != "player" {
+		return true
+	}
+	return s.playerAuto || s.forceAuto
+}
+
 func (s *Battle) RequestMainSkill(id string) bool {
 	if s.Done() {
 		return false
@@ -112,7 +131,7 @@ func (s *Battle) Step() []Event {
 		if u.Melee && (u.approaching || u.target == nil || u.target.hp <= 0 || !inRange(u, u.target)) {
 			continue
 		}
-		if (s.manual[u.ID] || u.energy >= s.cfg.Max) && s.mainSkill(u) {
+		if s.wantsMainSkill(u) && s.mainSkill(u) {
 			delete(s.manual, u.ID)
 			continue
 		}
