@@ -1,14 +1,17 @@
 package app
 
 import (
+	"errors"
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"lunexgame/internal/battle"
 	"lunexgame/internal/store"
 )
 
@@ -331,4 +334,71 @@ func TestLiveReplacedConnectionIsClosed(t *testing.T) {
 	if _, _, err := c1.ReadMessage(); err == nil {
 		t.Fatal("прежнее соединение при замене не закрыто")
 	}
+}
+
+func TestLiveBattleNewErrorIsReported(t *testing.T) {
+	prev := newLiveBattle
+	newLiveBattle = func() (*battle.Battle, error) { return nil, errors.New("плохая конфигурация") }
+	t.Cleanup(func() { newLiveBattle = prev })
+	ts, token := newLiveServer(t)
+	c := dialLive(t, ts, token)
+	if hello := readLive(t, c, 2*time.Second); hello["type"] != "hello" {
+		t.Fatalf("hello: %#v", hello)
+	}
+	if err := c.WriteJSON(map[string]any{"type": "start"}); err != nil {
+		t.Fatal(err)
+	}
+	msg := readLive(t, c, 2*time.Second)
+	if msg["error"] != "internal" {
+		t.Fatalf("ошибка создания боя потеряна: %#v", msg)
+	}
+	// Повтор не должен паниковать и не должен открыть бой из сломанной конфигурации.
+	if err := c.WriteJSON(map[string]any{"type": "start"}); err != nil {
+		t.Fatal(err)
+	}
+	msg = readLive(t, c, 2*time.Second)
+	if msg["error"] != "internal" {
+		t.Fatalf("повтор: %#v", msg)
+	}
+}
+
+func TestLiveParallelConnections(t *testing.T) {
+	prev := liveTickNanos.Load()
+	liveTickNanos.Store(int64(2 * time.Millisecond))
+	t.Cleanup(func() { liveTickNanos.Store(prev) })
+	ts, token := newLiveServer(t)
+	var wg sync.WaitGroup
+	for range 6 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c, _, err := websocket.DefaultDialer.Dial(wsURL(ts), map[string][]string{"Authorization": {"Bearer " + token}})
+			if err != nil {
+				t.Errorf("dial: %v", err)
+				return
+			}
+			defer c.Close()
+			_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
+			var hello map[string]any
+			if err := c.ReadJSON(&hello); err != nil {
+				return
+			}
+			_ = c.WriteJSON(map[string]any{"type": "start"})
+			_ = c.WriteJSON(map[string]any{"type": "main_skill", "unitId": "p0"})
+			for range 5 {
+				var m map[string]any
+				if err := c.ReadJSON(&m); err != nil {
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+func wsURL(ts *httptest.Server) string {
+	u, _ := url.Parse(ts.URL)
+	u.Scheme = "ws"
+	u.Path = Prefix + "/api/battle/live"
+	return u.String()
 }
