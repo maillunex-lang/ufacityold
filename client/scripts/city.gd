@@ -19,7 +19,7 @@ func _ready() -> void:
 
 func _open(item:String)->void:
 	if item=="Кампания": await _campaign()
-	elif item=="Герои": content.text="Герои\n\nСтраж\nВоин\n\nНовые герои откроются в кампании."
+	elif item=="Герои": await _heroes()
 	elif item=="Инвентарь": await _home(true)
 	else: await _home(false)
 
@@ -36,6 +36,21 @@ func _campaign()->void:
 	if OS.get_environment("LUNEXGAME_SMOKE_CITY")=="1":
 		print("CAMPAIGN_OK stages=",c.get("stages",[]).size()," open=",1)
 		get_tree().quit(0)
+
+func _heroes()->void:
+	var h:=await _request("/api/home"); if h.is_empty(): content.text="Не удалось загрузить героев"; return
+	content.text="Герои\nЗолото: %d   Опыт: %d"%[int(h.get("gold",0)),int(h.get("heroXp",0))]
+	for state in h.get("heroStates",[]):
+		var row:=HBoxContainer.new(); var label:=Label.new(); label.text="\n%s · уровень %d"%[str(state.get("id","герой")),int(state.get("level",1))]; label.add_theme_font_size_override("font_size",26); label.size_flags_horizontal=Control.SIZE_EXPAND_FILL; row.add_child(label)
+		var up:=Button.new(); up.text="Улучшить"; up.add_theme_font_size_override("font_size",22); up.pressed.connect(func()->void: _level_up(str(state.get("id","")))); row.add_child(up); base.add_child(row)
+
+func _level_up(id:String)->void:
+	var result:=await _post("/api/heroes/"+id+"/level"); if result.is_empty(): content.text="Недостаточно золота или опыта"; return
+	await _heroes()
+
+func _post(path:String)->Dictionary:
+	var r:=HTTPRequest.new(); add_child(r); var h:=PackedStringArray(["Authorization: Bearer "+Session.token]); if r.request(Session.base_url+path,h,HTTPClient.METHOD_POST)!=OK:return {}
+	var x:Array=await r.request_completed; r.queue_free(); if x[0]!=HTTPRequest.RESULT_SUCCESS:return {}; var p:Variant=JSON.parse_string((x[3] as PackedByteArray).get_string_from_utf8()); return p if p is Dictionary and x[1]==200 else {}
 
 func _request(path:String)->Dictionary:
 	var r:=HTTPRequest.new()

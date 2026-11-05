@@ -14,10 +14,16 @@ type Stage struct {
 	Boss bool   `json:"boss"`
 }
 type Home struct {
-	Gold    int      `json:"gold"`
-	HeroXP  int      `json:"heroXp"`
-	Cleared int      `json:"campaignCleared"`
-	Heroes  []string `json:"heroes"`
+	Gold       int         `json:"gold"`
+	HeroXP     int         `json:"heroXp"`
+	Cleared    int         `json:"campaignCleared"`
+	Heroes     []string    `json:"heroes"`
+	HeroStates []HeroState `json:"heroStates"`
+}
+type HeroState struct {
+	ID    string `json:"id"`
+	Level int    `json:"level"`
+	XP    int    `json:"xp"`
 }
 
 func Stages(cleared int) []Stage {
