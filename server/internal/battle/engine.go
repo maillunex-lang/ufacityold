@@ -194,6 +194,12 @@ func (s *Battle) Snapshot() State {
 	return state
 }
 
+// Roster — состав, закреплённый при создании боя (после пассивов). Снимок юнитов
+// его не содержит: клиенту живого боя нужны роль, имя, сторона и слот.
+func (s *Battle) Roster() []UnitDef {
+	return cloneDefs(s.defs)
+}
+
 func cloneDefs(defs []UnitDef) []UnitDef {
 	out := append([]UnitDef(nil), defs...)
 	for i := range out {

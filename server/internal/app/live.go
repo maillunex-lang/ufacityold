@@ -158,10 +158,24 @@ func (s *liveSession) stopTick() {
 
 func (s *liveSession) snapshotLocked(resumed bool) map[string]any {
 	state := s.battle.Snapshot()
+	speed, allowed := s.playbackLocked()
 	return map[string]any{
 		"type": "state", "state": state, "balanceVersion": state.Balance,
 		"resumed": resumed, "auto": s.battle.PlayerAuto(), "battleId": s.id,
+		"roster": s.battle.Roster(), "speed": speed, "allowedSpeeds": allowed,
 	}
+}
+
+func (s *liveSession) playbackLocked() (int, []int) {
+	if s.store == nil || s.account == 0 {
+		return 1, []int{1}
+	}
+	access, err := s.store.BattleSpeedAccess(s.account)
+	if err != nil {
+		return 1, []int{1}
+	}
+	opt := access.Options(1)
+	return opt.Speed, opt.AllowedSpeeds
 }
 
 func (h *liveHub) ensureJanitor() {
@@ -423,6 +437,9 @@ func (s *liveSession) tick() {
 				return
 			}
 			events := s.battle.Step()
+			if events == nil {
+				events = []battle.Event{}
+			}
 			c := s.conn
 			done := s.battle.Done()
 			if done {
