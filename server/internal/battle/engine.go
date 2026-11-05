@@ -57,6 +57,30 @@ func New(defs []UnitDef, cfg Config) (*Battle, error) {
 			d.PassiveActive = true
 			s.events = append(s.events, Event{T: 0, Type: "passive", Src: d.ID, SkillID: d.Passive.ID})
 		}
+	}
+	counts := map[string]map[Faction]int{"player": {}, "enemy": {}}
+	for i := range defs {
+		if defs[i].Faction != "" {
+			counts[defs[i].Side][defs[i].Faction]++
+		}
+	}
+	for i := range defs {
+		d := &defs[i]
+		bonus := 0
+		if n := counts[d.Side][d.Faction]; n >= 5 {
+			bonus = 200
+		} else if n >= 4 {
+			bonus = 150
+		} else if n >= 3 {
+			bonus = 100
+		}
+		if bonus > 0 {
+			d.Attack += d.Attack * bonus / 1000
+			d.MaxHP += d.MaxHP * bonus / 1000
+		}
+		if d.Attack > maxStat || d.MaxHP > maxStat {
+			return nil, invalid(d.ID, "фракционный бонус превышает предел характеристик")
+		}
 		u := &unit{UnitDef: *d, hp: d.MaxHP, nextAt: d.IntervalMs, pos: d.Position, approach: -1}
 		for slot, skill := range d.AutoSkills {
 			if skill.ID != "" && d.Level >= skill.UnlockLevel {

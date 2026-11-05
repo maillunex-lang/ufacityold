@@ -34,6 +34,10 @@ const (
 	FactionEmber Faction = "ember"
 )
 
+func factionAdvantage(attacker, defender Faction) bool {
+	return attacker == FactionDawn && defender == FactionTide || attacker == FactionTide && defender == FactionGrove || attacker == FactionGrove && defender == FactionEmber || attacker == FactionEmber && defender == FactionDawn
+}
+
 const (
 	Tank    Role = "tank"
 	Fighter Role = "fighter"
@@ -205,7 +209,10 @@ func (s *Battle) gain(u *unit, v float64) {
 }
 
 // damage наносит урон; возвращает фактический. Энергия цели растёт от полученного урона.
-func (s *Battle) damage(t *unit, amount int) Hit {
+func (s *Battle) damage(src, t *unit, amount int) Hit {
+	if factionAdvantage(src.Faction, t.Faction) {
+		amount = amount * 120 / 100
+	}
 	if amount > t.hp {
 		amount = t.hp
 	}
@@ -248,7 +255,7 @@ func (s *Battle) basicAttack(u *unit) {
 		return
 	}
 	u.nextAt = s.t + u.IntervalMs
-	h := s.damage(tg, u.Attack)
+	h := s.damage(u, tg, u.Attack)
 	s.gain(u, float64(h.Amount)*s.cfg.PerDealt) // нанесённый урон обычной атаки даёт энергию владельцу
 	s.flush(Event{T: s.t, Type: "attack", Src: u.ID, Targets: []Hit{h}})
 }
@@ -268,22 +275,22 @@ func (s *Battle) mainSkill(u *unit) bool {
 	switch u.Role {
 	case Tank: // удар по ближайшему + лечение себя на 10% (владелец не получает за это энергию)
 		if tg := s.primaryTarget(u, enemies); tg != nil {
-			ev.Targets = append(ev.Targets, s.damage(tg, mul(1.5)))
+			ev.Targets = append(ev.Targets, s.damage(u, tg, mul(1.5)))
 		}
 		if h, n := s.heal(u, u.MaxHP/10); n > 0 {
 			ev.Targets = append(ev.Targets, h)
 		}
 	case Fighter:
 		if tg := s.primaryTarget(u, enemies); tg != nil {
-			ev.Targets = append(ev.Targets, s.damage(tg, mul(3)))
+			ev.Targets = append(ev.Targets, s.damage(u, tg, mul(3)))
 		}
 	case Archer:
 		if tg := lowestHP(enemies); tg != nil {
-			ev.Targets = append(ev.Targets, s.damage(tg, mul(2.5)))
+			ev.Targets = append(ev.Targets, s.damage(u, tg, mul(2.5)))
 		}
 	case Mage:
 		for _, tg := range enemies {
-			ev.Targets = append(ev.Targets, s.damage(tg, mul(1.2)))
+			ev.Targets = append(ev.Targets, s.damage(u, tg, mul(1.2)))
 		}
 	case Healer:
 		ev.Kind = "heal"

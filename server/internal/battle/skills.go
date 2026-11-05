@@ -139,7 +139,7 @@ func (s *Battle) autoSkill(u *unit, slot int) bool {
 	ev := Event{T: s.t, Type: "auto_skill", Src: u.ID, Kind: skill.Kind, SkillID: skill.ID, SkillSlot: slot + 1}
 	for _, target := range targets {
 		if skill.Kind == "damage" {
-			hit := s.damage(target, amount)
+			hit := s.damage(u, target, amount)
 			s.gain(u, float64(hit.Amount)*s.cfg.PerDealt)
 			ev.Targets = append(ev.Targets, hit)
 		} else {
