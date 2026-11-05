@@ -43,7 +43,7 @@ func New(defs []UnitDef, cfg Config) (*Battle, error) {
 	if cfg.MinHeroDistance == 0 {
 		cfg.MinHeroDistance = 600
 	}
-	s := &Battle{cfg: cfg.Energy, minHeroDistance: cfg.MinHeroDistance, touched: map[string]bool{}, balance: cfg.BalanceVersion}
+	s := &Battle{cfg: cfg.Energy, minHeroDistance: cfg.MinHeroDistance, touched: map[string]bool{}, manual: map[string]bool{}, balance: cfg.BalanceVersion}
 	for i := range defs {
 		d := &defs[i]
 		d.PassiveActive = false // входной флаг не авторитетен
@@ -83,6 +83,19 @@ func Run(defs []UnitDef, cfg Energy) (Outcome, error) {
 
 func (s *Battle) Done() bool { return s.result != nil }
 
+func (s *Battle) RequestMainSkill(id string) bool {
+	if s.Done() {
+		return false
+	}
+	for _, u := range s.units {
+		if u.ID == id && !u.dead && u.energy >= s.cfg.Max {
+			s.manual[id] = true
+			return true
+		}
+	}
+	return false
+}
+
 // Step продвигает ровно один тик игрового времени. Повтор после завершения — без
 // новых событий и побочных эффектов. Приоритет: главная, автонавык 1, автонавык 2, атака.
 // У автонавыков свои часы; обычная атака не сбрасывает их перезарядку.
@@ -99,7 +112,8 @@ func (s *Battle) Step() []Event {
 		if u.Melee && (u.approaching || u.target == nil || u.target.hp <= 0 || !inRange(u, u.target)) {
 			continue
 		}
-		if u.energy >= s.cfg.Max && s.mainSkill(u) {
+		if (s.manual[u.ID] || u.energy >= s.cfg.Max) && s.mainSkill(u) {
+			delete(s.manual, u.ID)
 			continue
 		}
 		if s.autoSkill(u, 0) || s.autoSkill(u, 1) {

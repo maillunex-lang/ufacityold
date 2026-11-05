@@ -42,6 +42,7 @@ type Config struct {
 func New(b Build, cfg Config) http.Handler {
 	started := time.Now()
 	mux := http.NewServeMux()
+	live := &liveHub{sessions: map[int64]*liveSession{}}
 
 	mux.HandleFunc("GET "+Prefix+"/{$}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -174,6 +175,13 @@ func New(b Build, cfg Config) http.Handler {
 				return
 			}
 			writeJSON(w, http.StatusOK, battleReply{BattleID: r.PathValue("id"), PlaybackOptions: options})
+		})
+		mux.HandleFunc("GET "+Prefix+"/api/battle/live", func(w http.ResponseWriter, r *http.Request) {
+			acc, ok := auth(w, r)
+			if !ok {
+				return
+			}
+			live.serve(w, r, acc)
 		})
 	}
 	// Раздача ресурсов (основа для загрузчика клиента). Каталог пуст, пока нет контента.
