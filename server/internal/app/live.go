@@ -57,6 +57,29 @@ func liveResultTTL() time.Duration {
 // maxLiveBattles — общий предел одновременных живых боёв на процесс (VPS: 1 vCPU, около 2 ГБ ОЗУ).
 const maxLiveBattles = 32
 
+// liveMaxMessage — потолок одного кадра клиента. Команды короткие; 4 МБ раньше принимались.
+const liveMaxMessage = 1024
+
+// livePongWaitNanos — сколько ждать сообщение или pong (0 = 70 с, меньше nginx 75 с).
+var livePongWaitNanos atomic.Int64
+
+// livePingNanos — период ping (0 = 25 с).
+var livePingNanos atomic.Int64
+
+func livePongWait() time.Duration {
+	if n := livePongWaitNanos.Load(); n > 0 {
+		return time.Duration(n)
+	}
+	return 70 * time.Second
+}
+
+func livePingEvery() time.Duration {
+	if n := livePingNanos.Load(); n > 0 {
+		return time.Duration(n)
+	}
+	return 25 * time.Second
+}
+
 // liveEpoch останавливает тики предыдущих тестов, не трогая игровое время.
 var liveEpoch atomic.Int64
 
@@ -245,12 +268,54 @@ func (h *liveHub) detach(account int64, c *websocket.Conn) {
 	s.mu.Unlock()
 }
 
+func (h *liveHub) pingLoop(account int64, c *websocket.Conn, stop <-chan struct{}) {
+	t := time.NewTicker(livePingEvery())
+	defer t.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-t.C:
+			h.mu.Lock()
+			s := h.sessions[account]
+			h.mu.Unlock()
+			var writeMu *sync.Mutex
+			if s != nil {
+				s.mu.Lock()
+				same := s.conn == c && !s.replaced
+				s.mu.Unlock()
+				if !same {
+					return
+				}
+				writeMu = &s.writeMu
+			}
+			if writeMu != nil {
+				writeMu.Lock()
+			}
+			err := c.WriteControl(websocket.PingMessage, []byte("ok"), time.Now().Add(5*time.Second))
+			if writeMu != nil {
+				writeMu.Unlock()
+			}
+			if err != nil {
+				return
+			}
+		}
+	}
+}
+
 func (h *liveHub) serve(w http.ResponseWriter, r *http.Request, account int64) {
 	c, err := liveUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
 	}
 	defer c.Close()
+	c.SetReadLimit(liveMaxMessage)
+	refreshRead := func() { _ = c.SetReadDeadline(time.Now().Add(livePongWait())) }
+	refreshRead()
+	c.SetPongHandler(func(string) error { return c.SetReadDeadline(time.Now().Add(livePongWait())) })
+	stopPing := make(chan struct{})
+	defer close(stopPing)
+	go h.pingLoop(account, c, stopPing)
 	h.ensureJanitor()
 	if s := h.usable(account); s != nil {
 		s.bind(c)
@@ -267,6 +332,7 @@ func (h *liveHub) serve(w http.ResponseWriter, r *http.Request, account int64) {
 			h.detach(account, c)
 			return
 		}
+		refreshRead()
 		switch cmd.Type {
 		case "start":
 			s, code := h.begin(account, c)
