@@ -120,10 +120,12 @@ func _run() -> void:
 	if smoke:
 		if OS.get_environment("LUNEXGAME_SMOKE_BATTLE") == "1":
 			get_tree().change_scene_to_file("res://scenes/battle.tscn")
+		elif OS.get_environment("LUNEXGAME_SMOKE_CITY") == "1":
+			get_tree().change_scene_to_file("res://scenes/city.tscn")
 		else:
 			get_tree().quit(0)
 		return
-	battle_button.show()
+	get_tree().change_scene_to_file("res://scenes/city.tscn")
 
 
 ## Стартовый набор блокирует вход, остальное докачивается в фоне (пока без игрового экрана).
