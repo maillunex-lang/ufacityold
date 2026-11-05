@@ -17,6 +17,7 @@ import (
 	"lunexgame/internal/admin"
 	"lunexgame/internal/assets"
 	"lunexgame/internal/battle"
+	"lunexgame/internal/campaign"
 	"lunexgame/internal/store"
 )
 
@@ -99,6 +100,61 @@ func New(b Build, cfg Config) http.Handler {
 		}
 		battleLim := newLimiter(20, time.Minute)
 		speedLim := newLimiter(60, time.Minute)
+		mux.HandleFunc("GET "+Prefix+"/api/home", func(w http.ResponseWriter, r *http.Request) {
+			acc, ok := auth(w, r)
+			if !ok {
+				return
+			}
+			h, err := cfg.Store.Home(acc)
+			if err != nil {
+				writeJSON(w, 500, map[string]string{"error": "internal"})
+				return
+			}
+			writeJSON(w, 200, h)
+		})
+		mux.HandleFunc("GET "+Prefix+"/api/campaign", func(w http.ResponseWriter, r *http.Request) {
+			acc, ok := auth(w, r)
+			if !ok {
+				return
+			}
+			stages, err := cfg.Store.Campaign(acc)
+			if err != nil {
+				writeJSON(w, 500, map[string]string{"error": "internal"})
+				return
+			}
+			writeJSON(w, 200, map[string]any{"stages": stages})
+		})
+		mux.HandleFunc("POST "+Prefix+"/api/campaign/{stage}/fight", func(w http.ResponseWriter, r *http.Request) {
+			acc, ok := auth(w, r)
+			if !ok {
+				return
+			}
+			stage, err := strconv.Atoi(r.PathValue("stage"))
+			if err != nil {
+				writeJSON(w, 400, map[string]string{"error": "invalid_stage"})
+				return
+			}
+			stages, _ := cfg.Store.Campaign(acc)
+			if stage < 1 || stage > len(stages) || !stages[stage-1].Open {
+				writeJSON(w, 404, map[string]string{"error": "stage_locked"})
+				return
+			}
+			out, err := battle.Run(battle.PrototypeSquads(), battle.DefaultEnergy)
+			if err != nil {
+				writeJSON(w, 500, map[string]string{"error": "internal"})
+				return
+			}
+			gold, granted, err := cfg.Store.ApplyCampaignWin(acc, stage)
+			if err == campaign.ErrLocked {
+				writeJSON(w, 404, map[string]string{"error": "stage_locked"})
+				return
+			}
+			if err != nil {
+				writeJSON(w, 500, map[string]string{"error": "internal"})
+				return
+			}
+			writeJSON(w, 200, map[string]any{"winner": out.Result.Winner, "grantedGold": gold, "granted": granted, "stage": stage})
+		})
 		// Прототип: бой рассчитывается целиком на сервере (полный автомат), клиент проигрывает запись.
 		mux.HandleFunc("POST "+Prefix+"/api/battle/start", func(w http.ResponseWriter, r *http.Request) {
 			acc, ok := auth(w, r)
