@@ -87,11 +87,8 @@ func _tower()->void:
 		tower_box.add_child(row); tower_rows.append(row)
 
 func _fight_tower(floor:int)->void:
-	var result:=await _post("/api/tower/%d/fight"%floor)
-	if result.is_empty(): content.text="Не удалось начать бой Башни"; return
-	content.text="Этаж %d: %s\nНаграда: +%d золота, +%d опыта"%[floor,"ПОБЕДА" if str(result.get("winner",""))=="player" else "ПОРАЖЕНИЕ",int(result.get("grantedGold",0)),int(result.get("grantedHeroXp",0))]
-	await get_tree().create_timer(1.5).timeout
-	await _tower()
+	Session.tower_floor = floor
+	get_tree().change_scene_to_file("res://scenes/battle.tscn")
 
 func _clear_tower_rows()->void:
 	for row in tower_rows:
