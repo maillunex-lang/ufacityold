@@ -113,6 +113,7 @@ type Battle struct {
 	balance         string
 	result          *Result
 	delivered       int
+	manual          map[string]bool
 }
 
 func (s *Battle) outcome() Outcome {
