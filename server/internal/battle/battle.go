@@ -103,15 +103,16 @@ type unit struct {
 
 // Battle принадлежит одному исполнителю. Для разных боёв создаются независимые экземпляры.
 type Battle struct {
-	cfg       Energy
-	units     []*unit
-	events    []Event
-	t         int
-	touched   map[string]bool
-	defs      []UnitDef
-	balance   string
-	result    *Result
-	delivered int
+	cfg             Energy
+	minHeroDistance int
+	units           []*unit
+	events          []Event
+	t               int
+	touched         map[string]bool
+	defs            []UnitDef
+	balance         string
+	result          *Result
+	delivered       int
 }
 
 func (s *Battle) outcome() Outcome {

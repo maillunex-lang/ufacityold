@@ -186,6 +186,35 @@ func TestSeveralAttackersUseDistinctApproaches(t *testing.T) {
 	}
 }
 
+func TestMinimumDistanceIsDeterministic(t *testing.T) {
+	a := runBattle(t, PrototypeSquads(), DefaultEnergy)
+	b := runBattle(t, PrototypeSquads(), DefaultEnergy)
+	ja, _ := json.Marshal(a)
+	jb, _ := json.Marshal(b)
+	if string(ja) != string(jb) {
+		t.Fatal("разведение недетерминировано")
+	}
+	dead := map[string]bool{}
+	for _, e := range a.Events {
+		if e.Type == "death" {
+			dead[e.Src] = true
+		}
+	}
+	for i, u := range a.Units {
+		if dead[u.ID] {
+			continue
+		}
+		for _, v := range a.Units[i+1:] {
+			if dead[v.ID] {
+				continue
+			}
+			if distance(a.Positions[u.ID], a.Positions[v.ID]) < 600 {
+				t.Fatalf("живые герои слились: %s/%s", u.ID, v.ID)
+			}
+		}
+	}
+}
+
 func TestTravelTimeUsesSpeedAndRange(t *testing.T) {
 	for _, tc := range []struct{ speed, reach int }{{1000, 1100}, {3000, 1100}, {1000, 2200}} {
 		t.Run(fmt.Sprintf("скорость_%d_дальность_%d", tc.speed, tc.reach), func(t *testing.T) {
