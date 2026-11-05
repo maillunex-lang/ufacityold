@@ -79,3 +79,24 @@ func TestForceAutoCastsPlayerSkillWithoutCommand(t *testing.T) {
 	}
 	t.Fatal("при обрыве связи полный автомат не запустил главную способность игрока")
 }
+
+// D4: команда главной способности не принимается для врага и чужого id.
+func TestRequestMainSkillRejectsEnemy(t *testing.T) {
+	s, err := New(manualPair(), Config{Energy: DefaultEnergy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, u := range s.units {
+		u.energy = s.cfg.Max
+		u.dead = false
+	}
+	if s.RequestMainSkill("e") {
+		t.Fatal("принята команда для вражеского героя")
+	}
+	if s.RequestMainSkill("nope") {
+		t.Fatal("принята команда для неизвестного героя")
+	}
+	if !s.RequestMainSkill("p") {
+		t.Fatal("команда своего героя отклонена")
+	}
+}

@@ -107,10 +107,15 @@ func (s *Battle) RequestMainSkill(id string) bool {
 		return false
 	}
 	for _, u := range s.units {
-		if u.ID == id && !u.dead && u.energy >= s.cfg.Max {
-			s.manual[id] = true
-			return true
+		if u.ID != id {
+			continue
 		}
+		// Только живой герой стороны игрока. Враги выпускают способность сами.
+		if u.Side != "player" || u.dead || u.energy < s.cfg.Max {
+			return false
+		}
+		s.manual[id] = true
+		return true
 	}
 	return false
 }
