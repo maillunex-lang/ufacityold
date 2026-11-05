@@ -93,6 +93,7 @@ func New(b Build, cfg Config) http.Handler {
 			return id, true
 		}
 		battleLim := newLimiter(20, time.Minute)
+		speedLim := newLimiter(60, time.Minute)
 		// Прототип: бой рассчитывается целиком на сервере (полный автомат), клиент проигрывает запись.
 		mux.HandleFunc("POST "+Prefix+"/api/battle/start", func(w http.ResponseWriter, r *http.Request) {
 			acc, ok := auth(w, r)
@@ -103,6 +104,20 @@ func New(b Build, cfg Config) http.Handler {
 				writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "too_many_requests"})
 				return
 			}
+			speed, err := readSpeed(w, r, true)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_speed"})
+				return
+			}
+			access, err := cfg.Store.BattleSpeedAccess(acc)
+			if err != nil {
+				writeSpeedError(w, battle.PlaybackOptions{}, err)
+				return
+			}
+			if !access.Allows(speed) {
+				writeSpeedError(w, access.Options(1), store.ErrSpeedForbidden)
+				return
+			}
 			out, runErr := battle.Run(battle.PrototypeSquads(), battle.DefaultEnergy)
 			if runErr != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal"})
@@ -110,11 +125,13 @@ func New(b Build, cfg Config) http.Handler {
 			}
 			js, err := json.Marshal(out)
 			if err == nil {
-				var id string
-				if id, err = cfg.Store.SaveBattle(acc, out.Balance, out.Result.Winner, js); err == nil {
-					writeJSON(w, http.StatusOK, map[string]any{"battleId": id, "battle": json.RawMessage(js)})
+				id, options, saveErr := cfg.Store.SaveBattle(acc, out.Balance, out.Result.Winner, js, speed)
+				if saveErr == nil {
+					writeJSON(w, http.StatusOK, battleReply{id, json.RawMessage(js), options})
 					return
 				}
+				writeSpeedError(w, options, saveErr)
+				return
 			}
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal"})
 		})
@@ -123,7 +140,7 @@ func New(b Build, cfg Config) http.Handler {
 			if !ok {
 				return
 			}
-			js, err := cfg.Store.GetBattle(acc, r.PathValue("id"))
+			record, err := cfg.Store.GetBattle(acc, r.PathValue("id"))
 			if err == store.ErrNotFound {
 				writeJSON(w, http.StatusNotFound, map[string]string{"error": "not_found"})
 				return
@@ -131,7 +148,28 @@ func New(b Build, cfg Config) http.Handler {
 				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal"})
 				return
 			}
-			writeJSON(w, http.StatusOK, map[string]any{"battleId": r.PathValue("id"), "battle": json.RawMessage(js)})
+			writeJSON(w, http.StatusOK, battleReply{r.PathValue("id"), json.RawMessage(record.OutcomeJSON), record.Playback})
+		})
+		mux.HandleFunc("PUT "+Prefix+"/api/battle/{id}/speed", func(w http.ResponseWriter, r *http.Request) {
+			acc, ok := auth(w, r)
+			if !ok {
+				return
+			}
+			if !speedLim.allow(strconv.FormatInt(acc, 10)) {
+				writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "too_many_requests"})
+				return
+			}
+			speed, err := readSpeed(w, r, false)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_speed"})
+				return
+			}
+			options, err := cfg.Store.SetBattleSpeed(acc, r.PathValue("id"), speed)
+			if err != nil {
+				writeSpeedError(w, options, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, battleReply{BattleID: r.PathValue("id"), PlaybackOptions: options})
 		})
 	}
 	// Раздача ресурсов (основа для загрузчика клиента). Каталог пуст, пока нет контента.

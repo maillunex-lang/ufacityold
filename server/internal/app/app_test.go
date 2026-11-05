@@ -131,16 +131,39 @@ func TestBattleAPI(t *testing.T) {
 		t.Fatal(w.Code, w.Body.String())
 	}
 	var resp struct {
-		BattleID string `json:"battleId"`
-		Battle   struct {
+		BattleID      string `json:"battleId"`
+		Speed         int    `json:"speed"`
+		AllowedSpeeds []int  `json:"allowedSpeeds"`
+		Battle        struct {
 			Result struct{ Winner string } `json:"result"`
 			Events []json.RawMessage       `json:"events"`
 			Units  []json.RawMessage       `json:"units"`
 		} `json:"battle"`
 	}
 	json.Unmarshal(w.Body.Bytes(), &resp)
-	if resp.BattleID == "" || len(resp.Battle.Events) == 0 || len(resp.Battle.Units) != 10 || resp.Battle.Result.Winner == "" {
+	if resp.BattleID == "" || resp.Speed != 1 || len(resp.AllowedSpeeds) != 1 || resp.AllowedSpeeds[0] != 1 || len(resp.Battle.Events) == 0 || len(resp.Battle.Units) != 10 || resp.Battle.Result.Winner == "" {
 		t.Fatalf("неполный ответ: %s", w.Body.String()[:200])
+	}
+	for _, tc := range []struct {
+		body string
+		want int
+	}{{`{"speed":2}`, 403}, {`{"speed":3}`, 400}} {
+		r := httptest.NewRequest("PUT", "/LunexGame/api/battle/"+resp.BattleID+"/speed", strings.NewReader(tc.body))
+		r.Header.Set("Authorization", "Bearer "+tok1)
+		g := httptest.NewRecorder()
+		h.ServeHTTP(g, r)
+		if g.Code != tc.want {
+			t.Fatalf("скорость %s: код %d, ожидался %d", tc.body, g.Code, tc.want)
+		}
+	}
+	for range 2 {
+		r := httptest.NewRequest("PUT", "/LunexGame/api/battle/"+resp.BattleID+"/speed", strings.NewReader(`{"speed":1}`))
+		r.Header.Set("Authorization", "Bearer "+tok1)
+		g := httptest.NewRecorder()
+		h.ServeHTTP(g, r)
+		if g.Code != 200 {
+			t.Fatalf("повторная скорость: %d %s", g.Code, g.Body.String())
+		}
 	}
 	if g := call("GET", "/LunexGame/api/battle/"+resp.BattleID, tok1); g.Code != 200 {
 		t.Fatal("владелец не получил бой", g.Code)
@@ -223,8 +246,8 @@ func TestBattleAPI(t *testing.T) {
 		var forged struct {
 			Battle json.RawMessage `json:"battle"`
 		}
-		if err := json.Unmarshal(g.Body.Bytes(), &forged); err != nil || g.Code != 200 || !bytes.Equal(forged.Battle, first.Battle) {
-			t.Fatal("клиент изменил серверный расчёт", err, g.Code)
+		if err := json.Unmarshal(g.Body.Bytes(), &forged); err != nil || g.Code != 400 {
+			t.Fatal("клиент передал запрещённые параметры", err, g.Code)
 		}
 	}
 }

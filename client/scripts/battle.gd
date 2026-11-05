@@ -17,6 +17,7 @@ var speed: float = 1.0
 var smoke: bool = false
 var events: Array = []
 var result: Dictionary = {}
+var battle_id: String = ""
 var units: Dictionary = {}  # id -> Dictionary
 var t_ms: float = 0.0
 var idx: int = 0
@@ -36,6 +37,8 @@ var again_button: Button
 var portraits: Dictionary = {}  # id -> {bar, tint}
 var portrait_box: HBoxContainer
 var hud: MarginContainer
+var speed_buttons: Dictionary = {}
+var allowed_speeds: Array = [1]
 
 
 func _ready() -> void:
@@ -117,6 +120,18 @@ func _build_ui() -> void:
 	again_button.pressed.connect(func() -> void: get_tree().reload_current_scene())
 	again_button.hide()
 	msg.add_child(again_button)
+	var speed_row := HBoxContainer.new()
+	speed_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	speed_row.add_theme_constant_override("separation", 12)
+	for value in [1, 2, 4]:
+		var button := Button.new()
+		button.text = "x%d" % value
+		button.custom_minimum_size = Vector2(150, 80)
+		button.add_theme_font_size_override("font_size", 34)
+		button.pressed.connect(func() -> void: _set_battle_speed(value))
+		speed_row.add_child(button)
+		speed_buttons[value] = button
+	msg.add_child(speed_row)
 	var spacer := Control.new()
 	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -179,8 +194,8 @@ func _load_battle() -> void:
 	var req := HTTPRequest.new()
 	req.timeout = 20.0
 	add_child(req)
-	var hs := PackedStringArray(["Authorization: Bearer " + Session.token])
-	if req.request(Session.base_url + "/api/battle/start", hs, HTTPClient.METHOD_POST, "") != OK:
+	var hs := PackedStringArray(["Authorization: Bearer " + Session.token, "Content-Type: application/json"])
+	if req.request(Session.base_url + "/api/battle/start", hs, HTTPClient.METHOD_POST, JSON.stringify({"speed": 1})) != OK:
 		_fail("Не удалось отправить запрос боя")
 		return
 	var res: Array = await req.request_completed
@@ -193,6 +208,8 @@ func _load_battle() -> void:
 		_fail("Некорректный ответ сервера")
 		return
 	var b: Dictionary = parsed["battle"]
+	battle_id = str(parsed.get("battleId", ""))
+	_apply_playback(parsed)
 	events = b["events"]
 	result = b["result"]
 	final_positions = b.get("positions", {})
@@ -200,7 +217,37 @@ func _load_battle() -> void:
 		_spawn_unit(d)
 	status_label.hide()
 	playing = true
-	print("BATTLE_LOADED units=", units.size(), " events=", events.size(), " balance=", b.get("balanceVersion", "?"))
+	print("BATTLE_LOADED units=", units.size(), " events=", events.size(), " balance=", b.get("balanceVersion", "?"), " speed=", int(parsed.get("speed", 1)), " allowed_count=", allowed_speeds.size())
+
+
+func _apply_playback(payload: Dictionary) -> void:
+	var server_speed := int(payload.get("speed", 1))
+	allowed_speeds = payload.get("allowedSpeeds", [1])
+	for value in [1, 2, 4]:
+		var button: Button = speed_buttons.get(value)
+		if button:
+			button.disabled = not allowed_speeds.has(value)
+	if not smoke and OS.get_environment("LUNEXGAME_BATTLE_SPEED") == "":
+		speed = float(server_speed)
+
+
+func _set_battle_speed(value: int) -> void:
+	if not allowed_speeds.has(value):
+		return
+	var req := HTTPRequest.new()
+	req.timeout = 10.0
+	add_child(req)
+	var hs := PackedStringArray(["Authorization: Bearer " + Session.token, "Content-Type: application/json"])
+	if req.request(Session.base_url + "/api/battle/%s/speed" % battle_id, hs, HTTPClient.METHOD_PUT, JSON.stringify({"speed": value})) != OK:
+		req.queue_free()
+		return
+	var res: Array = await req.request_completed
+	req.queue_free()
+	if res[0] != HTTPRequest.RESULT_SUCCESS or res[1] != 200:
+		return
+	var parsed: Variant = JSON.parse_string((res[3] as PackedByteArray).get_string_from_utf8())
+	if parsed is Dictionary:
+		_apply_playback(parsed)
 
 
 func _fail(msg: String) -> void:

@@ -29,6 +29,9 @@ func (s *Store) CreateGuest() (accountID int64, token string, err error) {
 	if accountID, err = res.LastInsertId(); err != nil {
 		return
 	}
+	if _, err = tx.Exec(`INSERT INTO account_progress(account_id) VALUES(?)`, accountID); err != nil {
+		return
+	}
 	if _, err = tx.Exec(`INSERT INTO sessions(token_hash,account_id) VALUES(?,?)`, hashToken(token), accountID); err != nil {
 		return
 	}
