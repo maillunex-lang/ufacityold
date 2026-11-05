@@ -40,6 +40,8 @@ var hud: MarginContainer
 var speed_buttons: Dictionary = {}
 var allowed_speeds: Array = [1]
 var selected_speed: int = 1
+var live_ws: WebSocketPeer
+var live_connected := false
 
 
 func _ready() -> void:
@@ -189,6 +191,12 @@ func _make_portrait(def: Dictionary) -> void:
 	en.add_theme_stylebox_override("fill", sb_fill)
 	en.add_theme_stylebox_override("background", sb_bg)
 	box.add_child(en)
+	var skill_button := Button.new()
+	skill_button.text = "Главная"
+	skill_button.custom_minimum_size = Vector2(0, 54)
+	skill_button.add_theme_font_size_override("font_size", 20)
+	skill_button.pressed.connect(func() -> void: _request_main_skill(str(def["id"])))
+	box.add_child(skill_button)
 	portrait_box.add_child(box)
 	portraits[str(def["id"])] = {"bar": en, "tint": tint}
 
@@ -218,6 +226,8 @@ func _load_battle() -> void:
 	final_positions = b.get("positions", {})
 	for d in b["units"]:
 		_spawn_unit(d)
+	if not smoke:
+		_connect_live()
 	status_label.hide()
 	playing = true
 	print("BATTLE_LOADED units=", units.size(), " events=", events.size(), " balance=", b.get("balanceVersion", "?"), " speed=", int(parsed.get("speed", 1)), " allowed_count=", allowed_speeds.size())
@@ -349,8 +359,36 @@ func _spawn_unit(d: Dictionary) -> void:
 	if side == "player":
 		_make_portrait(d)
 
+func _connect_live() -> void:
+	live_ws = WebSocketPeer.new()
+	var ws_url := Session.base_url.replace("https://", "wss://").replace("http://", "ws://") + "/api/battle/live"
+	live_ws.handshake_headers = PackedStringArray(["Authorization: Bearer " + Session.token])
+	if live_ws.connect_to_url(ws_url) != OK:
+		live_ws = null
+
+func _poll_live() -> void:
+	if live_ws == null:
+		return
+	live_ws.poll()
+	if live_ws.get_ready_state() == WebSocketPeer.STATE_OPEN:
+		live_connected = true
+	elif live_ws.get_ready_state() == WebSocketPeer.STATE_CLOSED:
+		live_connected = false
+		return
+	while live_ws.get_available_packet_count() > 0:
+		var data: Variant = JSON.parse_string((live_ws.get_packet() as PackedByteArray).get_string_from_utf8())
+		if data is Dictionary and data.get("type", "") == "command" and not bool(data.get("accepted", false)):
+			status_label.text = "Главная способность ещё не готова"
+
+func _request_main_skill(unit_id: String) -> void:
+	if live_ws == null or not live_connected:
+		status_label.text = "Соединение с боем ещё не установлено"
+		return
+	live_ws.send_text(JSON.stringify({"type": "main_skill", "unitId": unit_id}))
+
 
 func _process(delta: float) -> void:
+	_poll_live()
 	if not playing or finished:
 		return
 	t_ms += delta * 1000.0 * speed
