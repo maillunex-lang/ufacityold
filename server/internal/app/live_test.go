@@ -35,16 +35,55 @@ func newLiveServer(t *testing.T) (*httptest.Server, string) {
 }
 
 func dialLive(t *testing.T, ts *httptest.Server, token string) *websocket.Conn {
+	return dialLivePath(t, ts, token, "")
+}
+
+func dialLiveFresh(t *testing.T, ts *httptest.Server, token string) *websocket.Conn {
+	return dialLivePath(t, ts, token, "new=1")
+}
+
+func dialLivePath(t *testing.T, ts *httptest.Server, token, query string) *websocket.Conn {
 	t.Helper()
 	u, _ := url.Parse(ts.URL)
 	u.Scheme = "ws"
 	u.Path = Prefix + "/api/battle/live"
+	u.RawQuery = query
 	c, _, err := websocket.DefaultDialer.Dial(u.String(), map[string][]string{"Authorization": {"Bearer " + token}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { c.Close() })
 	return c
+}
+
+func TestFreshLiveBattleCancelsDisconnectedBattle(t *testing.T) {
+	prev := liveTickNanos.Load()
+	liveTickNanos.Store(int64(5 * time.Millisecond))
+	t.Cleanup(func() { liveTickNanos.Store(prev) })
+	ts, token := newLiveServer(t)
+	c := dialLive(t, ts, token)
+	if hello := readLive(t, c, 2*time.Second); hello["type"] != "hello" {
+		t.Fatalf("hello: %#v", hello)
+	}
+	if err := c.WriteJSON(map[string]any{"type": "start"}); err != nil {
+		t.Fatal(err)
+	}
+	if state := readLive(t, c, 2*time.Second); stateT(state) != 0 {
+		t.Fatalf("первый бой не начался с нуля: %#v", state)
+	}
+	_ = c.Close()
+
+	fresh := dialLiveFresh(t, ts, token)
+	if hello := readLive(t, fresh, 2*time.Second); hello["type"] != "hello" {
+		t.Fatalf("для нового входа нужен hello, получено: %#v", hello)
+	}
+	if err := fresh.WriteJSON(map[string]any{"type": "start"}); err != nil {
+		t.Fatal(err)
+	}
+	state := readLive(t, fresh, 2*time.Second)
+	if state["type"] == "error" || stateT(state) != 0 || stateDone(state) {
+		t.Fatalf("новый вход не аннулировал отключённый бой: %#v", state)
+	}
 }
 
 func readLive(t *testing.T, c *websocket.Conn, timeout time.Duration) map[string]any {
