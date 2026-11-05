@@ -144,7 +144,7 @@ func New(b Build, cfg Config) http.Handler {
 				writeJSON(w, 500, map[string]string{"error": "internal"})
 				return
 			}
-			gold, granted, err := cfg.Store.ApplyCampaignWin(acc, stage)
+			gold, xp, granted, err := cfg.Store.ApplyCampaignWin(acc, stage)
 			if err == campaign.ErrLocked {
 				writeJSON(w, 404, map[string]string{"error": "stage_locked"})
 				return
@@ -153,7 +153,23 @@ func New(b Build, cfg Config) http.Handler {
 				writeJSON(w, 500, map[string]string{"error": "internal"})
 				return
 			}
-			writeJSON(w, 200, map[string]any{"winner": out.Result.Winner, "grantedGold": gold, "granted": granted, "stage": stage})
+			writeJSON(w, 200, map[string]any{"winner": out.Result.Winner, "grantedGold": gold, "grantedHeroXp": xp, "granted": granted, "stage": stage})
+		})
+		mux.HandleFunc("POST "+Prefix+"/api/heroes/{id}/level", func(w http.ResponseWriter, r *http.Request) {
+			acc, ok := auth(w, r)
+			if !ok {
+				return
+			}
+			state, gold, xp, err := cfg.Store.LevelUpHero(acc, r.PathValue("id"))
+			if err == store.ErrNotFound {
+				writeJSON(w, 404, map[string]string{"error": "not_found"})
+				return
+			}
+			if err != nil {
+				writeJSON(w, 409, map[string]any{"error": "insufficient_resources", "gold": gold, "heroXp": xp})
+				return
+			}
+			writeJSON(w, 200, state)
 		})
 		// Прототип: бой рассчитывается целиком на сервере (полный автомат), клиент проигрывает запись.
 		mux.HandleFunc("POST "+Prefix+"/api/battle/start", func(w http.ResponseWriter, r *http.Request) {
