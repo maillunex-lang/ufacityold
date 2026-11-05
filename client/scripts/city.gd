@@ -6,6 +6,8 @@ var afk_button: Button
 var hero_rows: Array[Node] = []
 var campaign_rows: Array[Node] = []
 var campaign_box: VBoxContainer
+var tower_rows: Array[Node] = []
+var tower_box: VBoxContainer
 var demo := false
 
 func _ready() -> void:
@@ -15,15 +17,17 @@ func _ready() -> void:
 	base=VBoxContainer.new(); base.add_theme_constant_override("separation",20); safe.add_child(base)
 	var title:=Label.new(); title.text="Самрая · город"; title.add_theme_font_size_override("font_size",54); title.add_theme_color_override("font_color",Color("d4af37")); base.add_child(title)
 	var tabs:=HBoxContainer.new(); base.add_child(tabs)
-	for item in ["Город","Кампания","Герои","Инвентарь"]:
+	for item in ["Город","Кампания","Башня","Герои","Инвентарь"]:
 		var b:=Button.new(); b.text=item; b.custom_minimum_size=Vector2(0,90); b.size_flags_horizontal=Control.SIZE_EXPAND_FILL; b.add_theme_font_size_override("font_size",28); b.pressed.connect(func()->void: _open(item)); tabs.add_child(b)
 	content=Label.new(); content.autowrap_mode=TextServer.AUTOWRAP_WORD_SMART; content.add_theme_font_size_override("font_size",30); content.add_theme_color_override("font_color",Color("e8d9a0")); base.add_child(content)
 	campaign_box=VBoxContainer.new(); campaign_box.add_theme_constant_override("separation",10); base.add_child(campaign_box)
+	tower_box=VBoxContainer.new(); tower_box.add_theme_constant_override("separation",10); base.add_child(tower_box)
 	_open("Город")
 	if demo: get_tree().create_timer(1.0).timeout.connect(func()->void: _open("Кампания"))
 
 func _open(item:String)->void:
 	if item=="Кампания": await _campaign()
+	elif item=="Башня": await _tower()
 	elif item=="Герои": await _heroes()
 	elif item=="Инвентарь": await _home(true)
 	else: await _home(false)
@@ -32,6 +36,7 @@ func _home(inventory:bool)->void:
 	var h:=await _request("/api/home"); if h.is_empty(): content.text="Не удалось загрузить город"; return
 	_clear_hero_rows()
 	_clear_campaign_rows()
+	_clear_tower_rows()
 	content.text="Золото: %d\nОпыт героя: %d\nПройдено этапов: %d\n\n%s"%[int(h.get("gold",0)),int(h.get("heroXp",0)),int(h.get("campaignCleared",0)),"Инвентарь" if inventory else "Выберите раздел ниже."]
 	if afk_button:
 		afk_button.queue_free(); afk_button=null
@@ -49,6 +54,7 @@ func _claim_afk()->void:
 func _campaign()->void:
 	var c:=await _request("/api/campaign"); if c.is_empty(): content.text="Не удалось загрузить кампанию"; return
 	_clear_hero_rows(); _clear_campaign_rows()
+	_clear_tower_rows()
 	var lines:PackedStringArray=["Кампания"]
 	for s in c.get("stages",[]):
 		var id:=int(s.get("id",0)); var open:=bool(s.get("open",false)); lines.append("%s  %s"%[str(s.get("name","Этап")),"ДОСТУПЕН" if open else "закрыт"])
@@ -69,9 +75,32 @@ func _clear_campaign_rows()->void:
 		if is_instance_valid(row): row.queue_free()
 	campaign_rows.clear()
 
+func _tower()->void:
+	var t:=await _request("/api/tower"); if t.is_empty(): content.text="Не удалось загрузить Башню"; return
+	_clear_hero_rows(); _clear_campaign_rows(); _clear_tower_rows()
+	content.text="Башня\nПройдено этажей: %d"%int(t.get("cleared",0))
+	for raw in t.get("floors",[]):
+		var floor:=int(raw.get("floor",0)); var open:=bool(raw.get("open",false)); var boss:=bool(raw.get("boss",false))
+		var row:=HBoxContainer.new(); var label:=Label.new(); label.text="Этаж %d%s"%[floor," · БОСС" if boss else ""]; label.add_theme_font_size_override("font_size",26); label.size_flags_horizontal=Control.SIZE_EXPAND_FILL; row.add_child(label)
+		if open:
+			var fight:=Button.new(); fight.text="Сражаться"; fight.custom_minimum_size=Vector2(0,64); fight.add_theme_font_size_override("font_size",22); fight.pressed.connect(func()->void: _fight_tower(floor)); row.add_child(fight)
+		tower_box.add_child(row); tower_rows.append(row)
+
+func _fight_tower(floor:int)->void:
+	var result:=await _post("/api/tower/%d/fight"%floor)
+	if result.is_empty(): content.text="Не удалось начать бой Башни"; return
+	content.text="Этаж %d: %s\nНаграда: +%d золота, +%d опыта"%[floor,"ПОБЕДА" if str(result.get("winner",""))=="player" else "ПОРАЖЕНИЕ",int(result.get("grantedGold",0)),int(result.get("grantedHeroXp",0))]
+	await get_tree().create_timer(1.5).timeout
+	await _tower()
+
+func _clear_tower_rows()->void:
+	for row in tower_rows:
+		if is_instance_valid(row): row.queue_free()
+	tower_rows.clear()
+
 func _heroes()->void:
 	var h:=await _request("/api/home"); if h.is_empty(): content.text="Не удалось загрузить героев"; return
-	_clear_hero_rows(); _clear_campaign_rows()
+	_clear_hero_rows(); _clear_campaign_rows(); _clear_tower_rows()
 	var counts:= {}
 	for state in h.get("heroStates",[]):
 		var faction:=_hero_faction(str(state.get("id",""))); counts[faction]=int(counts.get(faction,0))+1
