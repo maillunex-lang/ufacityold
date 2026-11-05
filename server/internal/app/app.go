@@ -4,6 +4,7 @@ package app
 
 import (
 	"encoding/json"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"lunexgame/internal/admin"
 	"lunexgame/internal/assets"
 	"lunexgame/internal/battle"
 	"lunexgame/internal/store"
@@ -32,7 +34,9 @@ type Config struct {
 	DBPath    string
 	BackupDir string
 	WebDir    string // каталог Web-сборки клиента (PWA); пусто — не раздаётся
-	AssetsDir string // каталог загружаемых ресурсов (вне релизов, не перезаписывается деплоем)
+	// AdminPasswordHash — хэш пароля владельца (argon2id). Пусто — админка полностью выключена (маршрут закрыт).
+	AdminPasswordHash string
+	AssetsDir         string // каталог загружаемых ресурсов (вне релизов, не перезаписывается деплоем)
 }
 
 func New(b Build, cfg Config) http.Handler {
@@ -183,10 +187,25 @@ func New(b Build, cfg Config) http.Handler {
 			http.Redirect(w, r, Prefix+"/play/", http.StatusMovedPermanently)
 		})
 	}
-	// Админка не реализована: маршрут закрыт явно.
-	mux.HandleFunc(Prefix+"/admin/", func(w http.ResponseWriter, r *http.Request) {
-		http.NotFound(w, r)
-	})
+	// Админка создаётся только при заданном хэше пароля; иначе маршрут закрыт (404).
+	var adm *admin.Service
+	if cfg.AdminPasswordHash != "" && !admin.ValidHash(cfg.AdminPasswordHash) {
+		// Закрыто по умолчанию: испорченный хэш не должен давать ни «включённую, но недоступную», ни открытую админку.
+		log.Printf("ВНИМАНИЕ: LUNEXGAME_ADMIN_PASSWORD_HASH имеет неверный формат — админка ВЫКЛЮЧЕНА (получите хэш командой «lunexgame hash-password»)")
+	} else if cfg.Store != nil {
+		adm = admin.New(admin.Config{DB: cfg.Store.DB, PasswordHash: cfg.AdminPasswordHash, Preview: adminPreview,
+			ClientIP: clientIP, Logf: log.Printf})
+	}
+	if adm != nil {
+		mux.Handle(Prefix+"/admin/", adm.Handler())
+		mux.HandleFunc("GET "+Prefix+"/admin", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, Prefix+"/admin/", http.StatusMovedPermanently)
+		})
+	} else {
+		mux.HandleFunc(Prefix+"/admin/", func(w http.ResponseWriter, r *http.Request) {
+			http.NotFound(w, r)
+		})
+	}
 	// Перенаправление без слэша — с сохранением префикса.
 	mux.HandleFunc("GET "+Prefix, func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, Prefix+"/", http.StatusMovedPermanently)
@@ -266,6 +285,7 @@ func FromEnv() (addr string, cfg Config) {
 	}
 	cfg.AssetsDir = os.Getenv("LUNEXGAME_ASSETS_DIR")
 	cfg.WebDir = os.Getenv("LUNEXGAME_WEB_DIR")
+	cfg.AdminPasswordHash = admin.NormalizeHash(os.Getenv("LUNEXGAME_ADMIN_PASSWORD_HASH"))
 	cfg.DBPath = os.Getenv("LUNEXGAME_DB")
 	if cfg.DBPath == "" {
 		cfg.DBPath = "./data/lunexgame.db"
